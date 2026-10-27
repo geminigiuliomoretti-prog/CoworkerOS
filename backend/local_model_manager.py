@@ -51,20 +51,38 @@ class LocalModelManager:
     Garantisce:
     - Controllo RAM prima del caricamento (prevenzione thrashing)
     - Prevenzione istanze duplicate
-    - Avvio controllato (background senza finestre CMD)
+    - Client httpx asincrono riutilizzabile (pool di connessioni efficiente)
+    - Distinzione tra attesa in coda / avvio modello e tempo di generazione
+    - Conservazione stderr per diagnostica
+    - Lock dedicato solo all'inferenza (non blocca endpoint REST)
     - Arresto pulito alla chiusura dell'app (atexit e shutdown)
-    - Inferenza sequenziale con mutex (una richiesta alla volta)
-    - Supporto visione su richiesta (--mmproj)
     """
 
     def __init__(self) -> None:
         self.process: Optional[subprocess.Popen] = None
         self.is_vision_enabled: bool = False
-        self._lock = asyncio.Lock()
+        self._inference_lock = asyncio.Lock()
+        self._start_lock = asyncio.Lock()
         self._status: str = "stopped"  # stopped, starting, running, error, low_ram
         self._last_error: str = ""
+        self._last_stderr: str = ""
         self._pid: Optional[int] = None
+        self._client: Optional[httpx.AsyncClient] = None
+        self.inference_metrics_log: List[Dict[str, Any]] = []
         atexit.register(self.stop_server_sync)
+
+    def _get_client(self, timeout: float = 180.0) -> httpx.AsyncClient:
+        """Restituisce un client HTTP asincrono riutilizzabile."""
+        if self._client is None or self._client.is_closed:
+            limits = httpx.Limits(max_keepalive_connections=5, max_connections=10, keepalive_expiry=60.0)
+            self._client = httpx.AsyncClient(timeout=timeout, limits=limits)
+        return self._client
+
+    async def close_client(self) -> None:
+        """Chiude il client HTTP asincrono in modo pulito."""
+        if self._client is not None and not self._client.is_closed:
+            await self._client.aclose()
+            self._client = None
 
     def is_server_healthy(self, timeout: float = 0.5) -> bool:
         """Verifica se l'endpoint /health di llama-server risponde 200 OK."""
@@ -82,9 +100,9 @@ class LocalModelManager:
         if self.process is None or self.process.poll() is not None:
             return False
         try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                r = await client.get(f"{BASE_URL}/health")
-                return r.status_code == 200
+            client = self._get_client(timeout=timeout)
+            r = await client.get(f"{BASE_URL}/health")
+            return r.status_code == 200
         except Exception:
             return False
 
@@ -158,8 +176,11 @@ class LocalModelManager:
             self.process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
                 creationflags=creationflags,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
             )
             self._pid = self.process.pid
 
@@ -167,9 +188,15 @@ class LocalModelManager:
             t0 = time.time()
             while time.time() - t0 < 35.0:
                 if self.process.poll() is not None:
-                    # Il processo è uscito prematuramente
+                    # Il processo è uscito prematuramente: cattura stderr diagnostico
+                    stderr_out = ""
+                    try:
+                        stderr_out = self.process.stderr.read() if self.process.stderr else ""
+                    except Exception:
+                        pass
+                    self._last_stderr = stderr_out
                     self._status = "error"
-                    self._last_error = f"llama-server è terminato con codice di uscita {self.process.returncode}."
+                    self._last_error = f"llama-server terminato (code {self.process.returncode}). Stderr: {stderr_out[:300]}"
                     return {"success": False, "error": self._last_error, "status": "error"}
 
                 if self.is_server_healthy(timeout=0.6):
@@ -196,8 +223,12 @@ class LocalModelManager:
             return {"success": False, "error": self._last_error, "status": "error"}
 
     async def start_server_async(self, enable_vision: bool = False) -> Dict[str, Any]:
-        """Avvio asincrono non bloccante di llama-server."""
-        return await asyncio.to_thread(self.start_server_sync, enable_vision)
+        """Avvio asincrono protetto da lock preventivo contro avvii concorrenti."""
+        async with self._start_lock:
+            if await self.is_server_healthy_async():
+                self._status = "running"
+                return {"success": True, "status": "running", "message": "Server già attivo."}
+            return await asyncio.to_thread(self.start_server_sync, enable_vision)
 
     def stop_server_sync(self) -> Dict[str, Any]:
         """Arresto controllato di llama-server."""
@@ -236,7 +267,8 @@ class LocalModelManager:
             return {"success": False, "error": self._last_error, "status": "error"}
 
     async def stop_server_async(self) -> Dict[str, Any]:
-        """Arresto asincrono di llama-server."""
+        """Arresto asincrono di llama-server e chiusura client HTTP."""
+        await self.close_client()
         return await asyncio.to_thread(self.stop_server_sync)
 
     def get_status(self) -> Dict[str, Any]:
@@ -282,17 +314,28 @@ class LocalModelManager:
         """
         Esegue una richiesta di completamento chat verso llama-server.
         Supporta sia output completo che streaming progressivo dei token (on_chunk).
-        Usa un asyncio.Lock per garantire che venga eseguita UNA sola inferenza alla volta.
+        Usa _inference_lock per garantire che venga eseguita UNA sola inferenza alla volta.
+        Registra metriche complete senza memorizzare prompt o credenziali.
         """
-        async with self._lock:
+        req_id = f"qwen_{int(time.time()*1000)}"
+        t_enqueue = time.time()
+        model_start_ms = 0.0
+
+        async with self._inference_lock:
+            queue_wait_ms = round((time.time() - t_enqueue) * 1000, 1)
+
             # 1. Verifica che il server sia attivo, altrimenti tenta l'avvio controllato
             if not await self.is_server_healthy_async():
+                t_start_model = time.time()
                 start_res = await self.start_server_async()
+                model_start_ms = round((time.time() - t_start_model) * 1000, 1)
                 if not start_res["success"]:
                     return {
                         "success": False,
                         "error": start_res.get("error", "Impossibile avviare llama-server locale."),
                         "status": start_res.get("status", "error"),
+                        "queue_wait_ms": queue_wait_ms,
+                        "model_start_ms": model_start_ms,
                     }
 
             is_stream = on_chunk is not None
@@ -308,116 +351,158 @@ class LocalModelManager:
                 payload["tools"] = tools
 
             url = f"{BASE_URL}/v1/chat/completions"
-            t_start = time.time()
+            client = self._get_client(timeout=timeout)
+            t_gen_start = time.time()
+            first_token_time: Optional[float] = None
 
             try:
                 if is_stream:
-                    async with httpx.AsyncClient(timeout=timeout) as client:
-                        async with client.stream("POST", url, json=payload) as resp:
-                            duration_s = round(time.time() - t_start, 2)
-                            if resp.status_code != 200:
-                                body = await resp.aread()
-                                return {
-                                    "success": False,
-                                    "error": f"llama-server ha risposto con codice HTTP {resp.status_code}: {body.decode(errors='replace')}",
-                                    "status": "error",
-                                    "duration_s": duration_s,
-                                }
-
-                            accumulated_content = []
-                            tool_calls_dict: Dict[int, Dict[str, Any]] = {}
-                            usage = {}
-                            timings = {}
-
-                            async for line in resp.aiter_lines():
-                                line = line.strip()
-                                if not line or not line.startswith("data: "):
-                                    continue
-                                if line == "data: [DONE]":
-                                    break
-                                try:
-                                    item = json.loads(line[6:])
-                                    if "usage" in item and item["usage"]:
-                                        usage = item["usage"]
-                                    if "timings" in item and item["timings"]:
-                                        timings = item["timings"]
-                                    choices = item.get("choices", [])
-                                    if choices:
-                                        delta = choices[0].get("delta", {})
-                                        chunk_text = delta.get("content", "")
-                                        if chunk_text:
-                                            accumulated_content.append(chunk_text)
-                                            if on_chunk:
-                                                await on_chunk(chunk_text)
-                                        # Tool calls delta
-                                        tcs = delta.get("tool_calls", [])
-                                        for tc in tcs:
-                                            idx = tc.get("index", 0)
-                                            if idx not in tool_calls_dict:
-                                                tool_calls_dict[idx] = {
-                                                    "id": tc.get("id", ""),
-                                                    "type": tc.get("type", "function"),
-                                                    "function": {"name": "", "arguments": ""}
-                                                }
-                                            fn = tc.get("function", {})
-                                            if fn.get("name"):
-                                                tool_calls_dict[idx]["function"]["name"] += fn["name"]
-                                            if fn.get("arguments"):
-                                                tool_calls_dict[idx]["function"]["arguments"] += fn["arguments"]
-                                            if tc.get("id"):
-                                                tool_calls_dict[idx]["id"] = tc["id"]
-                                except Exception:
-                                    pass
-
-                            total_tool_calls = [tool_calls_dict[i] for i in sorted(tool_calls_dict.keys())]
-                            final_content = "".join(accumulated_content)
-                            duration_s = round(time.time() - t_start, 2)
-
-                            return {
-                                "success": True,
-                                "content": final_content,
-                                "tool_calls": total_tool_calls,
-                                "usage": usage,
-                                "timings": timings,
-                                "duration_s": duration_s,
-                            }
-                else:
-                    async with httpx.AsyncClient(timeout=timeout) as client:
-                        resp = await client.post(url, json=payload)
-                        duration_s = round(time.time() - t_start, 2)
-
+                    async with client.stream("POST", url, json=payload) as resp:
                         if resp.status_code != 200:
+                            body = await resp.aread()
                             return {
                                 "success": False,
-                                "error": f"llama-server ha risposto con codice HTTP {resp.status_code}: {resp.text}",
+                                "error": f"llama-server ha risposto con codice HTTP {resp.status_code}: {body.decode(errors='replace')}",
                                 "status": "error",
-                                "duration_s": duration_s,
+                                "duration_s": round(time.time() - t_gen_start, 2),
                             }
 
-                        data = resp.json()
-                        choices = data.get("choices", [])
-                        if not choices:
-                            return {
-                                "success": False,
-                                "error": "Risposta vuota ricevuta da llama-server.",
-                                "status": "error",
-                                "duration_s": duration_s,
-                            }
+                        accumulated_content = []
+                        tool_calls_dict: Dict[int, Dict[str, Any]] = {}
+                        usage = {}
+                        timings = {}
 
-                        message = choices[0].get("message", {})
-                        content = message.get("content", "") or ""
-                        tool_calls = message.get("tool_calls", [])
-                        usage = data.get("usage", {})
-                        timings = data.get("timings", {})
+                        async for line in resp.aiter_lines():
+                            line = line.strip()
+                            if not line or not line.startswith("data: "):
+                                continue
+                            if line == "data: [DONE]":
+                                break
+                            try:
+                                item = json.loads(line[6:])
+                                if "usage" in item and item["usage"]:
+                                    usage = item["usage"]
+                                if "timings" in item and item["timings"]:
+                                    timings = item["timings"]
+                                choices = item.get("choices", [])
+                                if choices:
+                                    delta = choices[0].get("delta", {})
+                                    chunk_text = delta.get("content", "")
+                                    if chunk_text:
+                                        if first_token_time is None:
+                                            first_token_time = time.time()
+                                        accumulated_content.append(chunk_text)
+                                        if on_chunk:
+                                            await on_chunk(chunk_text)
+                                    # Tool calls delta
+                                    tcs = delta.get("tool_calls", [])
+                                    for tc in tcs:
+                                        idx = tc.get("index", 0)
+                                        if idx not in tool_calls_dict:
+                                            tool_calls_dict[idx] = {
+                                                "id": tc.get("id", ""),
+                                                "type": tc.get("type", "function"),
+                                                "function": {"name": "", "arguments": ""}
+                                            }
+                                        fn = tc.get("function", {})
+                                        if fn.get("name"):
+                                            tool_calls_dict[idx]["function"]["name"] += fn["name"]
+                                        if fn.get("arguments"):
+                                            tool_calls_dict[idx]["function"]["arguments"] += fn["arguments"]
+                                        if tc.get("id"):
+                                            tool_calls_dict[idx]["id"] = tc["id"]
+                            except Exception:
+                                pass
+
+                        total_tool_calls = [tool_calls_dict[i] for i in sorted(tool_calls_dict.keys())]
+                        final_content = "".join(accumulated_content)
+                        t_now = time.time()
+                        generation_ms = round((t_now - t_gen_start) * 1000, 1)
+                        ttft_ms = round((first_token_time - t_gen_start) * 1000, 1) if first_token_time else generation_ms
+                        total_ms = round((t_now - t_enqueue) * 1000, 1)
+                        completion_tokens = usage.get("completion_tokens", len(final_content.split()))
+                        prompt_tokens = usage.get("prompt_tokens", 0)
+                        tokens_per_sec = round(completion_tokens / (generation_ms / 1000), 2) if generation_ms > 0 else 0.0
+
+                        metric_entry = {
+                            "request_id": req_id,
+                            "provider": "LOCAL_QWEN",
+                            "queue_wait_ms": queue_wait_ms,
+                            "model_start_ms": model_start_ms,
+                            "prompt_tokens": prompt_tokens,
+                            "completion_tokens": completion_tokens,
+                            "time_to_first_token_ms": ttft_ms,
+                            "generation_ms": generation_ms,
+                            "total_ms": total_ms,
+                            "tokens_per_second": tokens_per_sec,
+                        }
+                        self.inference_metrics_log.append(metric_entry)
 
                         return {
                             "success": True,
-                            "content": content,
-                            "tool_calls": tool_calls,
+                            "content": final_content,
+                            "tool_calls": total_tool_calls,
                             "usage": usage,
                             "timings": timings,
-                            "duration_s": duration_s,
+                            "duration_s": round(generation_ms / 1000, 2),
+                            "metrics": metric_entry,
                         }
+                else:
+                    resp = await client.post(url, json=payload)
+                    t_now = time.time()
+                    generation_ms = round((t_now - t_gen_start) * 1000, 1)
+
+                    if resp.status_code != 200:
+                        return {
+                            "success": False,
+                            "error": f"llama-server ha risposto con codice HTTP {resp.status_code}: {resp.text}",
+                            "status": "error",
+                            "duration_s": round(generation_ms / 1000, 2),
+                        }
+
+                    data = resp.json()
+                    choices = data.get("choices", [])
+                    if not choices:
+                        return {
+                            "success": False,
+                            "error": "Risposta vuota ricevuta da llama-server.",
+                            "status": "error",
+                            "duration_s": round(generation_ms / 1000, 2),
+                        }
+
+                    message = choices[0].get("message", {})
+                    content = message.get("content", "") or ""
+                    tool_calls = message.get("tool_calls", [])
+                    usage = data.get("usage", {})
+                    timings = data.get("timings", {})
+                    total_ms = round((t_now - t_enqueue) * 1000, 1)
+                    completion_tokens = usage.get("completion_tokens", len(content.split()))
+                    prompt_tokens = usage.get("prompt_tokens", 0)
+                    tokens_per_sec = round(completion_tokens / (generation_ms / 1000), 2) if generation_ms > 0 else 0.0
+
+                    metric_entry = {
+                        "request_id": req_id,
+                        "provider": "LOCAL_QWEN",
+                        "queue_wait_ms": queue_wait_ms,
+                        "model_start_ms": model_start_ms,
+                        "prompt_tokens": prompt_tokens,
+                        "completion_tokens": completion_tokens,
+                        "time_to_first_token_ms": generation_ms,  # non-streaming: ttft coincide col tempo di risposta
+                        "generation_ms": generation_ms,
+                        "total_ms": total_ms,
+                        "tokens_per_second": tokens_per_sec,
+                    }
+                    self.inference_metrics_log.append(metric_entry)
+
+                    return {
+                        "success": True,
+                        "content": content,
+                        "tool_calls": tool_calls,
+                        "usage": usage,
+                        "timings": timings,
+                        "duration_s": round(generation_ms / 1000, 2),
+                        "metrics": metric_entry,
+                    }
 
             except httpx.TimeoutException:
                 return {
