@@ -71,11 +71,11 @@ class LocalModelManager:
         self.inference_metrics_log: List[Dict[str, Any]] = []
         atexit.register(self.stop_server_sync)
 
-    def _get_client(self, timeout: float = 180.0) -> httpx.AsyncClient:
+    def _get_client(self, timeout: Optional[float] = None) -> httpx.AsyncClient:
         """Restituisce un client HTTP asincrono riutilizzabile."""
         if self._client is None or self._client.is_closed:
             limits = httpx.Limits(max_keepalive_connections=5, max_connections=10, keepalive_expiry=60.0)
-            self._client = httpx.AsyncClient(timeout=timeout, limits=limits)
+            self._client = httpx.AsyncClient(limits=limits)
         return self._client
 
     async def close_client(self) -> None:
@@ -100,8 +100,8 @@ class LocalModelManager:
         if self.process is None or self.process.poll() is not None:
             return False
         try:
-            client = self._get_client(timeout=timeout)
-            r = await client.get(f"{BASE_URL}/health")
+            client = self._get_client()
+            r = await client.get(f"{BASE_URL}/health", timeout=timeout)
             return r.status_code == 200
         except Exception:
             return False
@@ -357,7 +357,7 @@ class LocalModelManager:
 
             try:
                 if is_stream:
-                    async with client.stream("POST", url, json=payload) as resp:
+                    async with client.stream("POST", url, json=payload, timeout=timeout) as resp:
                         if resp.status_code != 200:
                             body = await resp.aread()
                             return {
@@ -429,6 +429,7 @@ class LocalModelManager:
                             "provider": "LOCAL_QWEN",
                             "queue_wait_ms": queue_wait_ms,
                             "model_start_ms": model_start_ms,
+                            "prefill_ms": round(timings.get("prompt_ms", ttft_ms), 1),
                             "prompt_tokens": prompt_tokens,
                             "completion_tokens": completion_tokens,
                             "time_to_first_token_ms": ttft_ms,
@@ -448,7 +449,7 @@ class LocalModelManager:
                             "metrics": metric_entry,
                         }
                 else:
-                    resp = await client.post(url, json=payload)
+                    resp = await client.post(url, json=payload, timeout=timeout)
                     t_now = time.time()
                     generation_ms = round((t_now - t_gen_start) * 1000, 1)
 
@@ -485,6 +486,7 @@ class LocalModelManager:
                         "provider": "LOCAL_QWEN",
                         "queue_wait_ms": queue_wait_ms,
                         "model_start_ms": model_start_ms,
+                        "prefill_ms": round(timings.get("prompt_ms", 0.0), 1),
                         "prompt_tokens": prompt_tokens,
                         "completion_tokens": completion_tokens,
                         "time_to_first_token_ms": generation_ms,  # non-streaming: ttft coincide col tempo di risposta

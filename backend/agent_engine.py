@@ -623,43 +623,39 @@ class AgentOrchestrator:
         return None, MODEL_PRIMARY, last_error
 
     def _select_tools_for_turn(self, bot_id: str, prompt_text: str) -> List[Dict[str, Any]]:
-        """
-        Seleziona in modo mirato gli strumenti pertinenti per il bot e la specifica richiesta.
-        Evita di serializzare tool inutili su CPU locale, riducendo drasticamente la latenza di pre-fill.
-        """
-        text_lower = prompt_text.lower()
-        conversational_triggers = ("ciao", "buongiorno", "buonasera", "chi sei", "qual è il tuo ruolo", "spiega il tuo ruolo", "presentati", "cosa puoi fare")
-        operational_triggers = (
-            "file", "finestr", "windows", "cerca", "leggi", "apri", "clicca", "zip", "archivio",
-            "url", "http", "browse", "search", "read", "tool", "strumento", "schermo", "screenshot",
-            "directory", "cartella", "documento", "delega", "peer review"
+        text = prompt_text.lower()
+
+        desktop_words = (
+            "antigravity", "desktop", "schermo",
+            "finestra", "interfaccia", "clicca",
+            "seleziona", "barra laterale", "nuova conversazione",
+            "apri l'app", "apri applicazione"
         )
-        if any(c in text_lower for c in conversational_triggers) and not any(o in text_lower for o in operational_triggers):
-            return []
 
-        # Se l'istruzione indica esplicitamente uno specifico strumento, inviamo SOLO quello strumento per minimizzare i token su CPU
-        for tool_name, triggers in [
-            ("list_windows", ("list_windows", "finestre attive", "finestre aperte")),
-            ("search_files", ("search_files", "cerca file", "trova file", "ricerca file")),
-            ("read_document", ("read_document", "leggi documento", "leggi file", "leggi il file")),
-            ("inspect_zip", ("inspect_zip", "archivio zip", "file zip", "sample_archive")),
-            ("browse_url", ("browse_url", "http://", "https://", "pagina web")),
-            ("open_url_or_app", ("open_url_or_app", "apri applicazione", "apri app")),
-            ("inspect_screen", ("inspect_screen", "ispezione schermo", "cattura schermo")),
-            ("click_screen_element", ("click_screen_element", "clicca coordinate")),
-        ]:
-            if any(t in text_lower for t in triggers):
-                return [t for t in self.openai_tools if t["function"]["name"] == tool_name]
+        desktop_task = any(word in text for word in desktop_words)
 
-        role_tools = {
-            "chief": {"delegate_to_coworker", "request_peer_review", "list_windows", "search_files"},
-            "architect": {"delegate_to_coworker", "request_peer_review", "read_document", "search_files"},
-            "builder": {"manage_files", "search_files", "read_document", "inspect_zip", "inspect_screen", "click_screen_element", "focus_and_paste_into_app"},
-            "scout": {"browse_url", "inspect_zip", "read_document", "search_files", "list_windows", "open_url_or_app"},
-            "archivist": {"manage_files", "search_files", "read_document", "inspect_zip"},
-        }
-        allowed = set(role_tools.get(bot_id, {"delegate_to_coworker", "list_windows", "search_files"}))
-        return [t for t in self.openai_tools if t["function"]["name"] in allowed]
+        if desktop_task:
+            names = {
+                "list_windows",
+                "inspect_screen",
+                "click_screen_element",
+                "focus_and_paste_into_app",
+                "open_url_or_app",
+            }
+        elif any(word in text for word in ("zip", "archivio zip")):
+            names = {"inspect_zip", "read_document"}
+        elif any(word in text for word in ("file", "cartella", "documento")):
+            names = {"search_files", "read_document", "manage_files"}
+        else:
+            names = set()
+
+        if bot_id == "chief" and not desktop_task:
+            names.add("delegate_to_coworker")
+
+        return [
+            tool for tool in self.openai_tools
+            if tool["function"]["name"] in names
+        ]
 
     async def _call_qwen_local(
         self,
@@ -1225,6 +1221,19 @@ class AgentOrchestrator:
                     "4. Rispondi sempre in modo utile, chiaro e sintetico (in massimo 2-3 frasi) in italiano."
                 )
 
+                system_prompt += (
+                    "\nREGOLE OPERATIVE:\n"
+                    "- Se l'utente chiede di interagire con un'applicazione, "
+                    "usa gli strumenti desktop, non strumenti ZIP o filesystem.\n"
+                    "- Prima verifica la finestra e osserva lo schermo.\n"
+                    "- Per clic e digitazione richiedi approvazione esplicita.\n"
+                    "- Una delega non costituisce completamento del compito.\n"
+                    "- Non dichiarare di aver eseguito azioni senza risultati verificabili.\n"
+                    "- Se un'azione richiede più passaggi, conserva l'obiettivo originale.\n"
+                    "- Se non puoi completare un passaggio, indica esattamente "
+                    "quale operazione è bloccata e perché.\n"
+                )
+
                 structured_messages: List[Dict[str, Any]] = []
                 if current_item.get("caller") != "user":
                     task_prompt = (
@@ -1351,11 +1360,12 @@ class AgentOrchestrator:
                             db.update_activity(activity_id, status="failed", error_msg=f"Ciclo di delega verso {target_id} bloccato.")
                         elif target_id in bots_map and target_id not in queued_in_this_turn:
                             queued_in_this_turn.append(target_id)
+                            original_goal = current_item.get("root_goal") or root_task.get("goal") or user_content
                             subtask = db.create_task(
                                 chat_id=chat_id,
                                 bot_id=target_id,
                                 title=f"Delega a {bots_map[target_id]['name']}: {instr[:30]}",
-                                goal=instr,
+                                goal=original_goal,
                                 instruction=instr,
                                 parent_task_id=current_task_id,
                                 dependencies=[current_task_id],
@@ -1366,10 +1376,12 @@ class AgentOrchestrator:
                                 "instruction": instr,
                                 "shared_data": shared,
                                 "caller": bot_name,
+                                "root_goal": original_goal,
                             })
                             db.add_participant_to_chat(chat_id, target_id)
                             tool_summaries.append(f"👉 Passaggio di consegne a **@{bots_map[target_id]['name']}**: *{instr}* (Task: `{subtask['id']}`)")
                             db.update_activity(activity_id, status="completed", result={"target_id": target_id, "task_id": subtask["id"]})
+                            db.update_task_status_atomic(current_task_id, "delegated")
                             task_evidence["delegated_to"] = target_id
                             task_evidence["subtask_id"] = subtask["id"]
 
@@ -1419,6 +1431,8 @@ class AgentOrchestrator:
                                 "details": loc.get("error", "Elemento non trovato."),
                             }
                             task_evidence["inspection"] = {"found": False, "observation": obs}
+                            current_item["is_blocked"] = True
+                            current_item["block_reason"] = f"Elemento non individuato sullo schermo: {obs}"
                         else:
                             nx, ny = loc["norm_x"], loc["norm_y"]
                             rx, ry = tools_os.norm_to_physical_coords(nx, ny)
@@ -1652,16 +1666,29 @@ class AgentOrchestrator:
                             await _emit({"type": "tool_progress", "stage": "Risultato verificato", "tool": "list_windows", "bot_id": bot_id, "bot_name": bot_name})
                             w_preview = ", ".join(res_wins.get("windows", [])[:5]) or "Nessuna"
                             tool_summaries.append(f"🪟 **Finestre Windows:** {res_wins.get('count', 0)} attive (`{w_preview}`).")
-                            task_evidence["list_windows"] = {"count": res_wins.get("count", 0)}
+                            task_evidence["list_windows"] = {"count": res_wins.get("count", 0), "windows": res_wins.get("windows", [])}
+
+                            # Verifica esplicita disponibilità target per richieste desktop (es. Antigravity)
+                            inst_lower = current_item["instruction"].lower()
+                            if "antigravity" in inst_lower:
+                                has_antigravity = any("antigravity" in str(w).lower() for w in res_wins.get("windows", []))
+                                if not has_antigravity:
+                                    assistant_text = (
+                                        "Ho verificato le finestre attualmente attive sul desktop tramite `list_windows`, "
+                                        "ma l'applicazione **Antigravity** non risulta aperta.\n"
+                                        "Non è possibile accedere al progetto `clone-whoop` né avviare conversazioni "
+                                        "finché l'applicazione non è in esecuzione sul sistema."
+                                    )
+                                    current_item["is_blocked"] = True
+                                    current_item["block_reason"] = "Applicazione Antigravity non trovata tra le finestre attive."
                         else:
                             db.update_activity(activity_id, status="failed", error_msg=res_wins.get("message"))
-                            tool_summaries.append(f"⚠️ **Finestre Windows:** {res_wins.get('message')}")
                             tool_summaries.append(f"⚠️ **Finestre Windows:** {res_wins.get('message')}")
 
                 # Multi-step continuation: se sono stati eseguiti tool immediati e non ci sono approvazioni in sospeso o deleghe,
                 # e l'assistente non ha ancora formulato una risposta completa:
                 immediate_evidence = [k for k in ("search_files", "read_document", "inspect_zip", "browse_url", "list_windows") if k in task_evidence]
-                if immediate_evidence and not action_card and not turn_queue and len(assistant_text) < 40:
+                if immediate_evidence and not action_card and not turn_queue and len(assistant_text) < 40 and not current_item.get("is_blocked"):
                     current_prov = self._resolve_provider(user_content, current_item["instruction"])
                     if current_prov == "LOCAL":
                         # Su CPU locale evitiamo una seconda inferenza pesante: il report dettagliato è già in tool_summaries
@@ -1720,27 +1747,47 @@ class AgentOrchestrator:
                 final_content_parts = [p for p in [assistant_text, "\n".join(tool_summaries)] if p]
                 final_content = "\n\n".join(final_content_parts).strip() or "Operazione completata."
 
-                # Aggiornamento stato del task: se non è in waiting_approval, verifica le evidenze e completa
+                # Aggiornamento stato del task con separazione rigorosa: delegated, waiting_approval, running, completed, failed
                 current_state = db.get_task(current_task_id)
-                if current_state and current_state.get("status") != "waiting_approval":
-                    task_evidence["final_assistant_summary"] = assistant_text[:200]
-                    db.update_task_status_atomic(
-                        current_task_id,
-                        "completed",
-                        result={"content": final_content},
-                        evidence=task_evidence,
+                current_task_status = current_state.get("status") if current_state else "running"
+
+                if current_task_status == "waiting_approval" or (action_card and action_card.get("requires_approval")):
+                    db.update_task_status_atomic(current_task_id, "waiting_approval")
+                elif current_task_status == "delegated" or "delegated_to" in task_evidence:
+                    db.update_task_status_atomic(current_task_id, "delegated", evidence=task_evidence)
+                elif current_item.get("is_blocked"):
+                    db.update_task_status_atomic(current_task_id, "failed", error_msg=current_item.get("block_reason", "Operazione bloccata."))
+                else:
+                    # Verifica le evidenze oggettive prima di completare (non usare solo assistant_text come prova)
+                    has_verified_evidence = bool(
+                        (task_evidence.get("search_files") and task_evidence["search_files"].get("status") != "error") or
+                        (task_evidence.get("read_document") and task_evidence["read_document"].get("status") != "error") or
+                        (task_evidence.get("inspect_zip") and task_evidence["inspect_zip"].get("status") != "error") or
+                        (task_evidence.get("browse_url") and task_evidence["browse_url"].get("status") != "error") or
+                        (task_evidence.get("inspection") and task_evidence["inspection"].get("found") is True) or
+                        any(k.startswith("file_") and task_evidence[k].get("status") == "ok" for k in task_evidence)
                     )
-                    try:
-                        memory_manager.record_task_outcome(db.get_task(current_task_id))
-                    except Exception:
-                        pass
-                    try:
-                        await notification_manager.notify_task_completed(
-                            task_id=current_task_id,
-                            title=f"Task completato: {bot_name}",
-                            message=final_content[:160],
+                    tools_available = self._select_tools_for_turn(bot_id, current_item["instruction"])
+                    if has_verified_evidence or not tools_available:
+                        task_evidence["final_assistant_summary"] = assistant_text[:200]
+                        db.update_task_status_atomic(
+                            current_task_id,
+                            "completed",
+                            result={"content": final_content},
+                            evidence=task_evidence,
                         )
-                    except Exception:
+                        try:
+                            memory_manager.record_task_outcome(db.get_task(current_task_id))
+                        except Exception:
+                            pass
+                        try:
+                            await notification_manager.notify_task_completed(
+                                task_id=current_task_id,
+                                title=f"Task completato: {bot_name}",
+                                message=final_content[:160],
+                            )
+                        except Exception:
+                            pass
                         pass
 
                 saved_msg = db.save_message(
@@ -1940,11 +1987,7 @@ class AgentOrchestrator:
 
             if task_id:
                 if is_success:
-                    db.update_task_status_atomic(task_id, "completed", result=result, evidence=evidence_data)
-                    try:
-                        memory_manager.record_task_outcome(db.get_task(task_id))
-                    except Exception:
-                        pass
+                    db.update_task_status_atomic(task_id, "running", result=result, evidence=evidence_data)
                 else:
                     db.update_task_status_atomic(task_id, "failed", error_msg=result.get("message"))
 
@@ -1962,6 +2005,13 @@ class AgentOrchestrator:
                 await broadcast_fn(chat_id, {"type": "approval_resolved", "approval_id": approval_id, "status": "approved"})
                 if task_id:
                     await broadcast_fn(chat_id, {"type": "task_updated", "task": db.get_task(task_id)})
+
+            if is_success and task_id:
+                # Ripresa automatica del task multi-passaggio dopo ogni azione approvata (Fase 4 & Task Engine)
+                try:
+                    await self.resume_task(task_id, broadcast_fn=broadcast_fn)
+                except Exception as resume_err:
+                    logger.warning(f"Ripresa automatica task {task_id} post-approvazione: {resume_err}")
 
             return {"status": "ok", "result": result, "approval": db.get_approval(approval_id)}
 

@@ -94,7 +94,8 @@ class TestPhase2DRealE2E(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(t_failed["status"], "failed")
             print("  [PASS] Gestione resiliente errore provider: task marcato failed senza crash o blocchi.")
         elif resp:
-            print(f"  [EVIDENZA REALE GEMINI] Risposta generata dal modello {used_model}: {resp.text[:100]}...")
+            r_txt = str(resp.text or "")
+            print(f"  [EVIDENZA REALE GEMINI] Risposta generata dal modello {used_model}: {r_txt[:100]}...")
 
         # --------------------------------------------------------------------
         # 1B. Esecuzione Reale Swarm Multi-Agente con Produzione File e Approvazione

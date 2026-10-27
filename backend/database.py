@@ -1178,7 +1178,7 @@ def update_task_status_atomic(
     if result_data is not None and result is None:
         result = result_data
 
-    valid_statuses = ("pending", "running", "waiting_approval", "completed", "failed", "cancelled", "interrupted")
+    valid_statuses = ("pending", "running", "delegated", "waiting_approval", "completed", "failed", "cancelled", "interrupted")
     if new_status not in valid_statuses:
         raise ValueError(f"Stato task non valido: {new_status}")
 
