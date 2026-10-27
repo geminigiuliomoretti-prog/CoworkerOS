@@ -32,11 +32,11 @@ TEST_DB_PATH = TEST_DIR / "test_coworkers.db"
 
 # Override ambiente
 os.environ["COWORKEROS_AUTH_TOKEN"] = "test_secret_token_phase2c_master_12345"
+os.environ["COWORKEROS_DB_PATH"] = str(TEST_DB_PATH)
 
 # Patch database path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import database as db
-db.DB_PATH = TEST_DB_PATH
 
 # Re-inizializzazione del DB di test
 db.init_db()

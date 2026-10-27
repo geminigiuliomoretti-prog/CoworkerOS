@@ -25,6 +25,7 @@ from typing import Dict, Any
 CURRENT_DIR = Path(__file__).resolve().parent
 if str(CURRENT_DIR) not in sys.path:
     sys.path.insert(0, str(CURRENT_DIR))
+import test_db_isolation
 
 import database as db
 import tools_os

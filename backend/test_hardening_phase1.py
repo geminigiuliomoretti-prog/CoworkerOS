@@ -22,11 +22,14 @@ import threading
 import sqlite3
 import asyncio
 from pathlib import Path
-from fastapi.testclient import TestClient
 
+# Isolamento database sicuro da test_db_isolation PRIMA degli import applicativi
 CURRENT_DIR = Path(__file__).resolve().parent
 if str(CURRENT_DIR) not in sys.path:
     sys.path.insert(0, str(CURRENT_DIR))
+import test_db_isolation
+
+from fastapi.testclient import TestClient
 
 import database as db
 import tools_os
@@ -185,7 +188,7 @@ def test_atomic_approval_transitions_and_concurrency():
 
     def attempt_atomic_resolve(thread_idx: int):
         # Connessione SQLite indipendente per simulare due processi/thread separati
-        conn_thread = sqlite3.connect(str(db.DB_PATH), check_same_thread=False)
+        conn_thread = sqlite3.connect(str(db.get_db_path()), check_same_thread=False)
         try:
             with conn_thread:
                 cur = conn_thread.execute(

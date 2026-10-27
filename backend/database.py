@@ -647,18 +647,29 @@ def get_test_chats() -> List[Dict[str, Any]]:
 def delete_test_chats(chat_ids: List[str]) -> int:
     """
     Elimina in blocco le conversazioni di test selezionate dall'utente.
-    Garantisce che i default bot/chat dell'utente non possano essere rimossi.
+    Verifica rigorosamente che:
+    1. non sia una chat standard dell'utente;
+    2. sia effettivamente presente nell'elenco restituito da get_test_chats();
+    3. sia stata selezionata esplicitamente dall'utente.
     """
     if not chat_ids:
         return 0
+
+    default_ids = {"chat_chief", "chat_architect", "chat_builder", "chat_scout", "chat_archivist"}
+    # Verifica le chat di test legittimamente individuate
+    valid_test_chats = get_test_chats()
+    valid_test_ids = {c["id"] for c in valid_test_chats}
+
+    # Intersezione: deve appartenere alle test chat confermate e non essere default
+    target_ids = [cid for cid in chat_ids if cid in valid_test_ids and cid not in default_ids]
+    if not target_ids:
+        return 0
+
     conn = get_connection()
     deleted_count = 0
-    default_ids = {"chat_chief", "chat_architect", "chat_builder", "chat_scout", "chat_archivist"}
     try:
         with conn:
-            for cid in chat_ids:
-                if cid in default_ids:
-                    continue
+            for cid in target_ids:
                 conn.execute("DELETE FROM messages WHERE chat_id = ?;", (cid,))
                 conn.execute("DELETE FROM tasks WHERE chat_id = ?;", (cid,))
                 conn.execute("DELETE FROM activities WHERE chat_id = ?;", (cid,))

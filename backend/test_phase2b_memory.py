@@ -30,6 +30,7 @@ if hasattr(sys.stdout, "reconfigure"):
 CURRENT_DIR = Path(__file__).resolve().parent
 if str(CURRENT_DIR) not in sys.path:
     sys.path.insert(0, str(CURRENT_DIR))
+import test_db_isolation
 
 import database as db
 from memory_manager import memory_manager

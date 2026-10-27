@@ -33,10 +33,10 @@ os.environ["COWORKEROS_WORKSPACE_DIR"] = str(TEST_WORKSPACE)
 os.environ["COWORKEROS_AUTH_TOKEN"] = "test_phase2d_e2e_master_token_987654321"
 
 TEST_DB_PATH = TEST_WORKSPACE / "test_e2e_coworkers.db"
+os.environ["COWORKEROS_DB_PATH"] = str(TEST_DB_PATH)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import database as db
-db.DB_PATH = TEST_DB_PATH
 db.init_db()
 db.seed_db()
 
