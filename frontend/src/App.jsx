@@ -148,6 +148,12 @@ export default function App() {
   const messagesEndRef = useRef(null);
   const wsRef = useRef(null);
   const fileInputRef = useRef(null);
+  const activeChatIdRef = useRef(activeChatId);
+  const loadMessagesReqIdRef = useRef(0);
+
+  useEffect(() => {
+    activeChatIdRef.current = activeChatId;
+  }, [activeChatId]);
 
   const botsMap = useMemo(() => {
     const map = {};
@@ -173,40 +179,49 @@ export default function App() {
 
   const loadBootstrap = useCallback(async () => {
     try {
-      const isHealthy = await checkBackendHealth();
-      setBackendReady(isHealthy);
-      if (!isHealthy) return;
-
       const data = await bootstrap();
-      if (data) {
-        if (data.bots?.length) setBots(data.bots);
-        if (data.chats?.length) {
-          setChats(data.chats);
-          if (!data.chats.some((c) => c.id === activeChatId)) {
-            setActiveChatId(data.chats[0].id);
-          }
-        }
-        if (data.model_status) {
-          setModelStatus(data.model_status);
-          if (data.model_status.provider_mode) {
-            setProviderMode(data.model_status.provider_mode);
-          }
-        }
+
+      setBackendReady(true);
+      setBots(data.bots);
+      setChats(data.chats);
+
+      setActiveChatId(current =>
+        data.chats.some(chat => chat.id === current)
+          ? current
+          : (data.chats[0]?.id || null)
+      );
+
+      if (data.model_status) {
+        setModelStatus(data.model_status);
+        setProviderMode(
+          data.model_status.provider_mode || 'AUTO'
+        );
       }
-      await loadTestChatsList();
-    } catch (err) {
-      console.error('Bootstrap error:', err);
+
+      return true;
+    } catch (error) {
+      console.error('[Bootstrap]', error);
       setBackendReady(false);
+      setSendError(error.message);
+      return false;
     }
-  }, [activeChatId, loadTestChatsList]);
+  }, []);
 
   const loadChatMessages = useCallback(async (chatId) => {
     if (!chatId) return;
+    const reqId = ++loadMessagesReqIdRef.current;
     try {
       const msgs = await fetchMessages(chatId);
-      setMessages(Array.isArray(msgs) ? msgs : []);
+      // Se l'utente ha cambiato chat nel frattempo o la richiesta è obsoleta, scarta
+      if (reqId === loadMessagesReqIdRef.current && activeChatIdRef.current === chatId) {
+        setMessages(Array.isArray(msgs) ? msgs : []);
+      }
     } catch (err) {
       console.error('Messages error:', err);
+      // Non cancellare i messaggi esistenti in caso di errore di rete
+      if (reqId === loadMessagesReqIdRef.current && activeChatIdRef.current === chatId) {
+        setSendError(err.message || 'Impossibile recuperare i messaggi per questa conversazione.');
+      }
     }
   }, []);
 
@@ -214,23 +229,31 @@ export default function App() {
     if (!chatId) return;
     try {
       const list = await getTasks(chatId);
-      setTasks(Array.isArray(list) ? list : []);
+      if (activeChatIdRef.current === chatId) {
+        setTasks(Array.isArray(list) ? list : []);
+      }
     } catch (err) {
       console.error('Tasks error:', err);
     }
   }, []);
 
   useEffect(() => {
-    loadBootstrap();
-    const interval = setInterval(async () => {
-      const ok = await checkBackendHealth();
-      setBackendReady(ok);
-      if (ok && testChats.length === 0) {
-        loadTestChatsList();
-      }
-    }, 5000);
-    return () => clearInterval(interval);
-  }, [loadBootstrap, loadTestChatsList, testChats.length]);
+    let disposed = false;
+
+    const refresh = async () => {
+      if (disposed) return;
+      await loadBootstrap();
+    };
+
+    refresh();
+
+    const interval = setInterval(refresh, 15000);
+
+    return () => {
+      disposed = true;
+      clearInterval(interval);
+    };
+  }, [loadBootstrap]);
 
   useEffect(() => {
     if (!activeChatId) return;
@@ -256,7 +279,6 @@ export default function App() {
                 if (prev.some((m) => m.id === payload.message.id)) return prev;
                 return [...prev, payload.message];
               });
-              loadBootstrap();
             } else if (payload.type === 'streaming_chunk') {
               setStreamingMessage({
                 id: 'streaming-active',
@@ -348,10 +370,11 @@ export default function App() {
     setCleanupLoading(true);
     try {
       const res = await cleanupTestChats(selectedTestChats);
-      if (res && res.success) {
+      if (res?.status === 'ok') {
         setShowCleanupModal(false);
         setSelectedTestChats([]);
         await loadBootstrap();
+        await loadTestChatsList();
       } else {
         alert(res?.error || 'Errore durante la pulizia delle chat di test');
       }
@@ -418,6 +441,7 @@ export default function App() {
   };
 
   const openInspector = async () => {
+    if (loadingInspector) return;
     setShowInspectorModal(true);
     setLoadingInspector(true);
     try {
@@ -429,6 +453,7 @@ export default function App() {
       setInspectorWindows(winJson.windows || []);
     } catch (e) {
       console.error('Inspector error:', e);
+      alert(e.message || 'Errore durante la cattura dello schermo o la lettura delle finestre');
     } finally {
       setLoadingInspector(false);
     }
@@ -563,6 +588,7 @@ export default function App() {
 
   // SCHEDULER & AUTOMAZIONI HANDLERS (FASE 2C)
   const openSchedulerModal = async () => {
+    if (loadingScheduler) return;
     setShowSchedulerModal(true);
     setLoadingScheduler(true);
     try {
@@ -581,6 +607,7 @@ export default function App() {
       setUnreadNotifCount((notifs || []).filter((n) => !n.is_read).length);
     } catch (e) {
       console.warn('Errore caricamento scheduler:', e);
+      alert(e.message || 'Errore durante il caricamento delle attività programmate');
     } finally {
       setLoadingScheduler(false);
     }
@@ -830,8 +857,8 @@ export default function App() {
               </div>
             </div>
             <button
-              onClick={() => {
-                setSelectedTestChats(testChats.map((c) => c.id));
+              onClick={async () => {
+                await loadTestChatsList();
                 setShowCleanupModal(true);
               }}
               className="px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white text-[11px] font-bold rounded-xl transition cursor-pointer shadow-xs shrink-0"

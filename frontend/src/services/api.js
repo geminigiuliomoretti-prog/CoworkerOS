@@ -124,32 +124,43 @@ export const DEFAULT_CHATS = [
 ];
 
 export async function bootstrap() {
-  try {
-    const res = await authFetch(`${API_BASE}/bootstrap`, {}, 3000);
-    if (res.ok) {
-      return await res.json();
-    }
-  } catch (err) {
-    console.warn('Bootstrap backend unreachable:', err?.message || err);
+  const res = await authFetch(`${API_BASE}/bootstrap`, {}, 10000);
+
+  if (!res.ok) {
+    throw new Error(
+      `Bootstrap fallito: HTTP ${res.status}`
+    );
   }
-  return {
-    bots: DEFAULT_BOTS,
-    chats: DEFAULT_CHATS,
-    has_api_key: false,
-    auth_configured: false,
-  };
+
+  const data = await res.json();
+
+  if (!Array.isArray(data.bots) || !Array.isArray(data.chats)) {
+    throw new Error('Risposta bootstrap non valida');
+  }
+
+  return data;
 }
 
 export async function fetchMessages(chatId) {
-  try {
-    const res = await authFetch(`${API_BASE}/chats/${chatId}/messages`, {}, 4000);
-    if (res.ok) {
-      return await res.json();
-    }
-  } catch (err) {
-    console.warn(`Failed to fetch messages for ${chatId}:`, err);
+  const res = await authFetch(
+    `${API_BASE}/chats/${encodeURIComponent(chatId)}/messages`,
+    {},
+    10000
+  );
+
+  if (!res.ok) {
+    throw new Error(
+      `Caricamento messaggi fallito: HTTP ${res.status}`
+    );
   }
-  return [];
+
+  const messages = await res.json();
+
+  if (!Array.isArray(messages)) {
+    throw new Error('Formato messaggi non valido');
+  }
+
+  return messages;
 }
 
 export async function sendChatMessage({
@@ -175,9 +186,14 @@ export async function sendChatMessage({
 
 export async function checkBackendHealth() {
   try {
-    const res = await authFetch(`${API_BASE}/health`, {}, 2500);
+    const res = await authFetch(
+      `${API_BASE}/bootstrap`,
+      {},
+      5000
+    );
+
     return res.ok;
-  } catch (_) {
+  } catch {
     return false;
   }
 }
