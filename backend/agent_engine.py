@@ -518,15 +518,9 @@ class AgentOrchestrator:
         if mode == "CLOUD":
             return "CLOUD"
 
-        # Modalità AUTO:
-        ram_info = get_system_ram_info()
-        if ram_info["available_gb"] < 3.2 and not local_model_mgr.is_server_healthy():
-            return "CLOUD"
-
-        combined = (user_content + " " + instruction).lower()
-        if any(k in combined for k in ("gemini", "cloud", "spiega dettagliatamente la teoria")):
-            return "CLOUD"
-
+        # AUTO preferisce il modello locale.
+        # Il fallback cloud viene gestito separatamente
+        # soltanto quando configurato e disponibile.
         return "LOCAL"
 
     def reload_client(self, new_api_key: Optional[str] = None) -> bool:
@@ -648,6 +642,23 @@ class AgentOrchestrator:
             names = {"search_files", "read_document", "manage_files"}
         else:
             names = set()
+
+        simple_question = (
+            not desktop_task
+            and not names
+            and not any(
+                word in text
+                for word in (
+                    "delega", "collabora", "peer review",
+                    "analizza il progetto", "sviluppa",
+                    "implementa", "modifica il codice",
+                    "esegui un task"
+                )
+            )
+        )
+
+        if simple_question:
+            return []
 
         if bot_id == "chief" and not desktop_task:
             names.add("delegate_to_coworker")
@@ -795,38 +806,41 @@ class AgentOrchestrator:
             if q_res.get("success"):
                 return q_res
 
-            # Se fallisce e siamo in AUTO, tenta il fallback su Gemini Cloud
+            # Se fallisce e siamo in AUTO, tenta il fallback su Gemini Cloud soltanto se configurato con chiave valida
             if mode == "AUTO":
-                print(f"[AgentEngine] Qwen Locale non disponibile ({q_res.get('error')}). Fallback su Gemini Cloud...")
-                gem_resp, model_name, gem_err = await self._call_gemini_resilient(
-                    contents=[types.Content(role="user", parts=[types.Part.from_text(text=task_prompt)])],
-                    system_instruction=system_prompt,
-                    enable_tools=enable_tools,
-                    task_id=task_id,
-                    chat_id=chat_id,
-                )
-                if not gem_err and gem_resp is not None:
-                    norm_fcalls = []
-                    if gem_resp.function_calls:
-                        for fc in gem_resp.function_calls:
-                            norm_fcalls.append({
-                                "name": fc.name,
-                                "args": dict(fc.args) if fc.args else {},
-                                "id": getattr(fc, "id", None),
-                            })
-                    txts = []
-                    if gem_resp.candidates and gem_resp.candidates[0].content and gem_resp.candidates[0].content.parts:
-                        for p in gem_resp.candidates[0].content.parts:
-                            if getattr(p, "text", None):
-                                txts.append(p.text)
-                    return {
-                        "success": True,
-                        "assistant_text": "\n".join(txts).strip(),
-                        "function_calls": norm_fcalls,
-                        "model_name": f"{model_name} (Cloud Fallback)",
-                        "provider": "CLOUD_FALLBACK",
-                        "error": None,
-                    }
+                if not self.client:
+                    self.reload_client()
+                if self.client and self.api_key and self.api_key not in ("your_api_key_here", "la_tua_chiave_qui"):
+                    print(f"[AgentEngine] Qwen Locale non disponibile ({q_res.get('error')}). Fallback su Gemini Cloud...")
+                    gem_resp, model_name, gem_err = await self._call_gemini_resilient(
+                        contents=[types.Content(role="user", parts=[types.Part.from_text(text=task_prompt)])],
+                        system_instruction=system_prompt,
+                        enable_tools=enable_tools,
+                        task_id=task_id,
+                        chat_id=chat_id,
+                    )
+                    if not gem_err and gem_resp is not None:
+                        norm_fcalls = []
+                        if gem_resp.function_calls:
+                            for fc in gem_resp.function_calls:
+                                norm_fcalls.append({
+                                    "name": fc.name,
+                                    "args": dict(fc.args) if fc.args else {},
+                                    "id": getattr(fc, "id", None),
+                                })
+                        txts = []
+                        if gem_resp.candidates and gem_resp.candidates[0].content and gem_resp.candidates[0].content.parts:
+                            for p in gem_resp.candidates[0].content.parts:
+                                if getattr(p, "text", None):
+                                    txts.append(p.text)
+                        return {
+                            "success": True,
+                            "assistant_text": "\n".join(txts).strip(),
+                            "function_calls": norm_fcalls,
+                            "model_name": f"{model_name} (Cloud Fallback)",
+                            "provider": "CLOUD_FALLBACK",
+                            "error": None,
+                        }
             return q_res
 
         # Provider CLOUD (Gemini)
@@ -1233,6 +1247,19 @@ class AgentOrchestrator:
                     "- Se non puoi completare un passaggio, indica esattamente "
                     "quale operazione è bloccata e perché.\n"
                 )
+
+                if (
+                    current_item.get("caller") == "user"
+                    and not self._select_tools_for_turn(
+                        bot_id, current_item["instruction"]
+                    )
+                ):
+                    system_prompt += (
+                        "\nQuesta è una conversazione diretta. "
+                        "Rispondi alla domanda senza delegare ad altri agenti. "
+                        "Non inventare operazioni eseguite. "
+                        "Sii conciso ma completo.\n"
+                    )
 
                 structured_messages: List[Dict[str, Any]] = []
                 if current_item.get("caller") != "user":

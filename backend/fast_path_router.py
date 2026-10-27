@@ -68,6 +68,16 @@ class FastPathRouter:
         # Rimuove punteggiatura finale
         t_norm = re.sub(r"[?!.]+$", "", t).strip()
 
+        greetings = {
+            "ciao": "Ciao! Come posso aiutarti?",
+            "salve": "Salve! Dimmi cosa vuoi fare.",
+            "buongiorno": "Buongiorno! Come posso aiutarti?",
+            "buonasera": "Buonasera! Come posso aiutarti?",
+        }
+
+        if t_norm in greetings:
+            return ("direct_reply", {"content": greetings[t_norm]})
+
         # 1. Elenco finestre aperte
         if re.search(r"^(?:elenca|mostra|quali sono le|lista delle?|quali app sono|visualizza)\s+(?:le\s+)?finestre(?:\s+aperte|\s+attive)?(?:\s+sul\s+desktop)?$", t_norm):
             return ("list_windows", {})
@@ -136,6 +146,14 @@ class FastPathRouter:
         Esegue l'operazione in modalità Fast Path ultra-veloce senza passare per l'LLM.
         """
         t0 = time.time()
+
+        if action == "direct_reply":
+            return {
+                "handled": True,
+                "tool_name": "direct_reply",
+                "content": params["content"],
+                "duration_ms": 0,
+            }
 
         if action == "list_windows":
             res = tools_os.list_windows()
