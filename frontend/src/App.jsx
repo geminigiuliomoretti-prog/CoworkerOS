@@ -53,9 +53,9 @@ import {
 } from './services/api';
 
 export default function App() {
-  const [bots, setBots] = useState(DEFAULT_BOTS);
-  const [chats, setChats] = useState(DEFAULT_CHATS);
-  const [activeChatId, setActiveChatId] = useState('chat_chief');
+  const [bots, setBots] = useState([]);
+  const [chats, setChats] = useState([]);
+  const [activeChatId, setActiveChatId] = useState(null);
   const [messages, setMessages] = useState([]);
   const [inputText, setInputText] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
@@ -162,7 +162,7 @@ export default function App() {
   }, [bots]);
 
   const activeChat = useMemo(
-    () => chats.find((c) => c.id === activeChatId) || chats[0] || null,
+    () => chats.find((c) => c.id === activeChatId) || null,
     [chats, activeChatId]
   );
 
@@ -958,8 +958,18 @@ export default function App() {
 
       {/* 2. CHAT AREA CENTRALE */}
       <main className="flex-1 flex flex-col h-full bg-white">
-        <header
-          className="h-14 border-b border-gray-100 pl-6 pr-36 flex items-center justify-between shrink-0"
+        {backendReady === true && chats.length === 0 ? (
+          <div className="empty-state">
+            <h2>Nessuna conversazione</h2>
+            <p>Crea una chat per iniziare.</p>
+            <button onClick={() => setShowNewModal(true)}>
+              Nuova chat
+            </button>
+          </div>
+        ) : (
+          <>
+            <header
+              className="h-14 border-b border-gray-100 pl-6 pr-36 flex items-center justify-between shrink-0"
           style={{ WebkitAppRegion: 'drag' }}
         >
           <div className="flex items-center gap-3">
@@ -1454,6 +1464,8 @@ export default function App() {
             </button>
           </div>
         </div>
+        </>
+        )}
       </main>
 
       {/* 4. MODALE CREA COWOKER / STANZA */}
