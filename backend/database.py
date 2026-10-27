@@ -11,14 +11,22 @@ import os
 import hashlib
 from pathlib import Path
 import sqlite3
+import time
 from typing import Any, List, Dict, Optional
 import uuid
 
 def get_db_path() -> Path:
-    """Restituisce il percorso del database SQLite, supportando COWORKEROS_DB_PATH per isolamento test."""
     custom = os.getenv("COWORKEROS_DB_PATH")
+
     if custom:
-        return Path(custom).resolve()
+        return Path(custom).expanduser().resolve()
+
+    if os.getenv("COWORKEROS_TEST_MODE") == "1":
+        raise RuntimeError(
+            "Test senza database isolato: "
+            "COWORKEROS_DB_PATH obbligatorio."
+        )
+
     return Path(__file__).parent / "coworkers.db"
 
 def set_db_path(path: str | Path) -> None:
@@ -128,7 +136,8 @@ def init_db() -> None:
                     title TEXT NOT NULL,
                     is_group INTEGER DEFAULT 0,
                     participants_json TEXT NOT NULL,
-                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    provenance TEXT NOT NULL DEFAULT 'user'
                 );
                 """
             )
@@ -223,6 +232,24 @@ def init_db() -> None:
             act_cols = [row["name"] for row in cursor.fetchall()]
             if "task_id" not in act_cols:
                 conn.execute("ALTER TABLE activities ADD COLUMN task_id TEXT;")
+
+            # Migrazione sicura provenienza chat (user vs test) con backup preventivo coerente
+            cursor = conn.execute("PRAGMA table_info(chats);")
+            chat_cols = [row["name"] for row in cursor.fetchall()]
+            if "provenance" not in chat_cols:
+                db_file = get_db_path()
+                if db_file.exists() and db_file.is_file():
+                    bak_file = db_file.with_name(f"{db_file.stem}_backup_{int(time.time())}.db")
+                    try:
+                        with sqlite3.connect(bak_file) as bck:
+                            conn.backup(bck)
+                    except Exception as e:
+                        print(f"[DB] Backup SQLite prima della migrazione chats fallito: {e}")
+                conn.execute("ALTER TABLE chats ADD COLUMN provenance TEXT NOT NULL DEFAULT 'user';")
+
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_chats_provenance ON chats(provenance);"
+            )
 
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_activities_chat_status ON activities(chat_id, status);"
@@ -433,25 +460,20 @@ def init_db() -> None:
 
 
 def seed_db() -> None:
-    """Populates default bots and individual initial chats idempotently."""
+    """Inizializza gli agenti, senza creare conversazioni."""
     conn = get_connection()
     try:
         with conn:
             for bot in DEFAULT_BOTS:
                 conn.execute(
                     """
-                    INSERT OR IGNORE INTO bots (id, name, role, system_prompt, shape, color, effort)
-                    VALUES (:id, :name, :role, :system_prompt, :shape, :color, :effort);
+                    INSERT OR IGNORE INTO bots
+                    (id, name, role, system_prompt, shape, color, effort)
+                    VALUES
+                    (:id, :name, :role, :system_prompt,
+                     :shape, :color, :effort)
                     """,
                     bot,
-                )
-                chat_id = f"chat_{bot['id']}"
-                conn.execute(
-                    """
-                    INSERT OR IGNORE INTO chats (id, title, is_group, participants_json, updated_at)
-                    VALUES (?, ?, 0, ?, CURRENT_TIMESTAMP);
-                    """,
-                    (chat_id, bot["name"], json.dumps([bot["id"]])),
                 )
     finally:
         conn.close()
@@ -515,7 +537,7 @@ def get_all_chats() -> list[dict[str, Any]]:
     conn = get_connection()
     try:
         cursor = conn.execute(
-            "SELECT id, title, is_group, participants_json, updated_at FROM chats ORDER BY updated_at DESC;"
+            "SELECT id, title, is_group, participants_json, updated_at, provenance FROM chats ORDER BY updated_at DESC;"
         )
         results = []
         for row in cursor.fetchall():
@@ -535,7 +557,7 @@ def get_chat(chat_id: str) -> dict[str, Any] | None:
     conn = get_connection()
     try:
         cursor = conn.execute(
-            "SELECT id, title, is_group, participants_json, updated_at FROM chats WHERE id = ?;",
+            "SELECT id, title, is_group, participants_json, updated_at, provenance FROM chats WHERE id = ?;",
             (chat_id,),
         )
         row = cursor.fetchone()
@@ -556,10 +578,13 @@ def create_chat(
     participants: list[str],
     is_group: bool = False,
     chat_id: str | None = None,
+    provenance: str | None = None,
 ) -> dict[str, Any]:
     """Creates a new chat and returns its details."""
     if not chat_id:
         chat_id = f"chat_{uuid.uuid4().hex[:12]}"
+    if provenance is None:
+        provenance = "test" if os.getenv("COWORKEROS_TEST_MODE") == "1" else "user"
     participants_json = json.dumps(participants)
     is_group_int = 1 if is_group else 0
 
@@ -568,13 +593,13 @@ def create_chat(
         with conn:
             conn.execute(
                 """
-                INSERT INTO chats (id, title, is_group, participants_json, updated_at)
-                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP);
+                INSERT INTO chats (id, title, is_group, participants_json, updated_at, provenance)
+                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, ?);
                 """,
-                (chat_id, title, is_group_int, participants_json),
+                (chat_id, title, is_group_int, participants_json, provenance),
             )
             cursor = conn.execute(
-                "SELECT id, title, is_group, participants_json, updated_at FROM chats WHERE id = ?;",
+                "SELECT id, title, is_group, participants_json, updated_at, provenance FROM chats WHERE id = ?;",
                 (chat_id,),
             )
             row = cursor.fetchone()
@@ -602,66 +627,49 @@ def delete_chat(chat_id: str) -> bool:
 
 def get_test_chats() -> List[Dict[str, Any]]:
     """
-    Identifica le conversazioni create durante benchmark e test automatici
-    (es. 'Test Qwen Integration', 'Fase3_*', 'Fase 4*', '*Room', 'test_chat_*').
-    Non include MAI le conversazioni standard dell'utente ('chat_chief', 'chat_architect', ecc.).
+    Identifica le conversazioni esplicitamente marcate con provenance='test'.
+    Non include MAI conversazioni personali dell'utente né si affida a regex sul titolo.
     """
-    TEST_PATTERNS = [
-        r"^test_chat_",
-        r"^Test\b",
-        r"^Fase\s*\d",
-        r"^Fase\d",
-        r".*\bRoom$",
-        r"^Benchmark\b",
-    ]
-    default_ids = {"chat_chief", "chat_architect", "chat_builder", "chat_scout", "chat_archivist"}
-    all_chats = get_all_chats()
-    test_chats = []
-    
     conn = get_connection()
     try:
-        for c in all_chats:
-            cid = c.get("id", "")
-            title = c.get("title", "")
-            if cid in default_ids:
-                continue
-            if any(re.search(pat, cid, re.I) or re.search(pat, title, re.I) for pat in TEST_PATTERNS):
-                msg_count = 0
-                cur = conn.execute("SELECT COUNT(*) as cnt FROM messages WHERE chat_id = ?;", (cid,))
-                row = cur.fetchone()
-                if row:
-                    msg_count = row["cnt"]
-                test_chats.append({
-                    "id": cid,
-                    "title": title,
-                    "updated_at": c.get("updated_at"),
-                    "message_count": msg_count,
-                    "participants": c.get("participants", []),
-                })
+        cursor = conn.execute(
+            "SELECT id, title, is_group, participants_json, updated_at, provenance FROM chats WHERE provenance = 'test' ORDER BY updated_at DESC;"
+        )
+        test_chats = []
+        for row in cursor.fetchall():
+            cid = row["id"]
+            cnt_cur = conn.execute("SELECT COUNT(*) as cnt FROM messages WHERE chat_id = ?;", (cid,))
+            cnt_row = cnt_cur.fetchone()
+            msg_count = cnt_row["cnt"] if cnt_row else 0
+            try:
+                participants = json.loads(row["participants_json"])
+            except Exception:
+                participants = []
+            test_chats.append({
+                "id": cid,
+                "title": row["title"],
+                "updated_at": row["updated_at"],
+                "message_count": msg_count,
+                "participants": participants,
+                "provenance": row["provenance"],
+            })
+        return test_chats
     finally:
         conn.close()
-
-    return test_chats
 
 
 def delete_test_chats(chat_ids: List[str]) -> int:
     """
     Elimina in blocco le conversazioni di test selezionate dall'utente.
-    Verifica rigorosamente che:
-    1. non sia una chat standard dell'utente;
-    2. sia effettivamente presente nell'elenco restituito da get_test_chats();
-    3. sia stata selezionata esplicitamente dall'utente.
+    Elimina soltanto record esplicitamente marcati provenance='test'.
     """
     if not chat_ids:
         return 0
 
-    default_ids = {"chat_chief", "chat_architect", "chat_builder", "chat_scout", "chat_archivist"}
-    # Verifica le chat di test legittimamente individuate
     valid_test_chats = get_test_chats()
     valid_test_ids = {c["id"] for c in valid_test_chats}
 
-    # Intersezione: deve appartenere alle test chat confermate e non essere default
-    target_ids = [cid for cid in chat_ids if cid in valid_test_ids and cid not in default_ids]
+    target_ids = [cid for cid in chat_ids if cid in valid_test_ids]
     if not target_ids:
         return 0
 
@@ -674,7 +682,7 @@ def delete_test_chats(chat_ids: List[str]) -> int:
                 conn.execute("DELETE FROM tasks WHERE chat_id = ?;", (cid,))
                 conn.execute("DELETE FROM activities WHERE chat_id = ?;", (cid,))
                 conn.execute("DELETE FROM approvals WHERE chat_id = ?;", (cid,))
-                cur = conn.execute("DELETE FROM chats WHERE id = ?;", (cid,))
+                cur = conn.execute("DELETE FROM chats WHERE id = ? AND provenance = 'test';", (cid,))
                 if cur.rowcount > 0:
                     deleted_count += 1
     finally:

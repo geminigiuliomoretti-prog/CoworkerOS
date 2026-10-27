@@ -11,7 +11,8 @@ from pathlib import Path
 _TEST_TEMP_DIR = tempfile.TemporaryDirectory(prefix="coworkeros_isolated_test_")
 _TEST_DB_PATH = Path(_TEST_TEMP_DIR.name) / "test_isolated.db"
 
-# Imposta immediatamente la variabile d'ambiente globale per la configurazione DB
+# Imposta immediatamente le variabili d'ambiente per la modalità test e isolamento DB
+os.environ["COWORKEROS_TEST_MODE"] = "1"
 os.environ["COWORKEROS_DB_PATH"] = str(_TEST_DB_PATH)
 
 def get_test_db_path() -> Path:
