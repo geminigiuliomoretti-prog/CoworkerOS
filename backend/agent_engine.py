@@ -1237,9 +1237,9 @@ class AgentOrchestrator:
 
                 system_prompt += (
                     "\nREGOLE OPERATIVE:\n"
-                    "- Se l'utente chiede di interagire con un'applicazione, "
-                    "usa gli strumenti desktop, non strumenti ZIP o filesystem.\n"
-                    "- Prima verifica la finestra e osserva lo schermo.\n"
+                    "- Se l'utente chiede di interagire con un'applicazione o con il desktop, "
+                    "invoca subito lo strumento 'list_windows' o 'inspect_screen' per osservare l'ambiente "
+                    "prima di qualsiasi risposta o azione, senza usare strumenti ZIP o filesystem.\n"
                     "- Per clic e digitazione richiedi approvazione esplicita.\n"
                     "- Una delega non costituisce completamento del compito.\n"
                     "- Non dichiarare di aver eseguito azioni senza risultati verificabili.\n"
