@@ -54,6 +54,8 @@ class TestPhase2CScheduler(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         db.reset_db()
+        if not db.get_chat("chat_chief"):
+            db.create_chat("Chief", ["chief", "builder"], chat_id="chat_chief")
         self.scheduler = SchedulerService()
 
     async def asyncTearDown(self):

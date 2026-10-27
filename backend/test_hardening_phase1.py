@@ -36,6 +36,11 @@ import tools_os
 from main import app, AUTH_TOKEN
 from agent_engine import orchestrator
 
+# Assicura inizializzazione DB isolato e chat di test per foreign keys
+db.init_db()
+if not db.get_chat("chat_chief"):
+    db.create_chat("Chief", ["chief", "builder"], chat_id="chat_chief")
+
 
 def test_auth_protection_headers_only():
     """Verifica che tutti gli endpoint critici richiedano autenticazione via header e RIFIUTINO ?token=."""

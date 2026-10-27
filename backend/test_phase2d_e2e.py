@@ -53,6 +53,8 @@ class TestPhase2DRealE2E(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         db.reset_db()
+        if not db.get_chat("chat_chief"):
+            db.create_chat("Chief", ["chief", "architect", "builder"], chat_id="chat_chief")
         self.scheduler = SchedulerService()
         self.scheduler.set_orchestrator(orchestrator)
 
