@@ -8,4 +8,4 @@ scriptDir = fso.GetParentFolderName(WScript.ScriptFullName)
 WshShell.CurrentDirectory = scriptDir
 
 ' Launch npm start silently without opening a terminal window (0 = hidden, False = non-blocking)
-WshShell.Run "cmd /c npm start", 0, False
+WshShell.Run "cmd /c """ & scriptDir & "\Start_CoworkerOS.bat""", 0, False

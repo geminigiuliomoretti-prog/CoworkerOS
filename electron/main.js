@@ -3,18 +3,43 @@ const path = require('path');
 const { spawn, execSync } = require('child_process');
 const http = require('http');
 const fs = require('fs');
+const crypto = require('crypto');
 
 let mainWindow = null;
 let pythonProcess = null;
 
 function getOrInitAuthToken() {
   const envPath = path.join(__dirname, '..', 'backend', '.env');
-  let token = '';
-  if (fs.existsSync(envPath)) {
-    const content = fs.readFileSync(envPath, 'utf-8');
-    const match = content.match(/COWORKEROS_AUTH_TOKEN=['"]?([^'"\r\n]+)['"]?/);
-    if (match) token = match[1].trim();
+
+  let content = fs.existsSync(envPath)
+    ? fs.readFileSync(envPath, 'utf8')
+    : '';
+
+  const match = content.match(
+    /^\s*COWORKEROS_AUTH_TOKEN\s*=\s*['"]?([^'"\r\n#]+)['"]?/m
+  );
+
+  const existing = match?.[1]?.trim();
+
+  if (existing && !['null', 'your_token_here'].includes(existing)) {
+    return existing;
   }
+
+  const token = crypto.randomBytes(32).toString('hex');
+
+  content = content
+    .split(/\r?\n/)
+    .filter(line => !/^\s*COWORKEROS_AUTH_TOKEN\s*=/.test(line))
+    .join('\n');
+
+  fs.mkdirSync(path.dirname(envPath), { recursive: true });
+
+  fs.writeFileSync(
+    envPath,
+    `${content.trimEnd()}\nCOWORKEROS_AUTH_TOKEN=${token}\n`,
+    { encoding: 'utf8', mode: 0o600 }
+  );
+
   return token;
 }
 
@@ -31,61 +56,104 @@ function checkBackendReady(url) {
   });
 }
 
+function checkAuthenticatedBackend(token) {
+  return new Promise(resolve => {
+    const req = http.get({
+      hostname: '127.0.0.1',
+      port: 8000,
+      path: '/api/bootstrap',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'X-CoworkerOS-Token': token,
+      },
+      timeout: 2500,
+    }, res => {
+      res.resume();
+      resolve(res.statusCode === 200);
+    });
+
+    req.on('error', () => resolve(false));
+    req.on('timeout', () => {
+      req.destroy();
+      resolve(false);
+    });
+  });
+}
+
 async function startPythonBackend() {
-  const isAlreadyRunning = await checkBackendReady('http://127.0.0.1:8000/api/health');
-  if (isAlreadyRunning) {
-    console.log('[Electron] Backend FastAPI già attivo e pronto su http://127.0.0.1:8000');
+  const token = getOrInitAuthToken();
+
+  if (await checkAuthenticatedBackend(token)) {
+    console.log('[Electron] Backend autenticato già disponibile');
     return true;
   }
 
-  const backendDir = path.join(__dirname, '..', 'backend');
-  const venvWin = path.join(backendDir, '.venv', 'Scripts', 'python.exe');
-  const venvAlt = path.join(backendDir, 'venv', 'Scripts', 'python.exe');
-  let pythonExe = 'python';
-  if (fs.existsSync(venvWin)) pythonExe = venvWin;
-  else if (fs.existsSync(venvAlt)) pythonExe = venvAlt;
+  if (await checkBackendReady('http://127.0.0.1:8000/api/health')) {
+    throw new Error(
+      'Porta 8000 occupata da un backend non autenticabile. ' +
+      'Non è sicuro riutilizzarlo o avviarne un secondo.'
+    );
+  }
 
-  console.log(`[Electron] Avvio backend con: ${pythonExe} in ${backendDir}`);
-  const authToken = getOrInitAuthToken();
+  const backendDir = path.join(__dirname, '..', 'backend');
+  const candidates = [
+    path.join(backendDir, '.venv', 'Scripts', 'python.exe'),
+    path.join(backendDir, 'venv', 'Scripts', 'python.exe'),
+  ];
+
+  const pythonExe = candidates.find(p => fs.existsSync(p)) || 'python';
 
   pythonProcess = spawn(
     pythonExe,
-    ['-m', 'uvicorn', '--app-dir', backendDir, 'main:app', '--host', '127.0.0.1', '--port', '8000'],
+    [
+      '-m', 'uvicorn',
+      '--app-dir', backendDir,
+      'main:app',
+      '--host', '127.0.0.1',
+      '--port', '8000',
+    ],
     {
       cwd: backendDir,
       windowsHide: true,
-      env: { ...process.env, COWORKEROS_AUTH_TOKEN: authToken, PYTHONIOENCODING: 'utf-8' },
+      env: {
+        ...process.env,
+        COWORKEROS_AUTH_TOKEN: token,
+        PYTHONIOENCODING: 'utf-8',
+      },
     }
   );
 
-  pythonProcess.stdout?.on('data', (data) => {
-    console.log(`[FastAPI stdout] ${data.toString().trim()}`);
-  });
+  pythonProcess.stdout?.on('data', data =>
+    console.log('[FastAPI]', data.toString().trim())
+  );
 
-  pythonProcess.stderr?.on('data', (data) => {
-    console.error(`[FastAPI stderr] ${data.toString().trim()}`);
-  });
+  pythonProcess.stderr?.on('data', data =>
+    console.error('[FastAPI]', data.toString().trim())
+  );
 
-  pythonProcess.on('error', (err) => {
-    console.error('[Electron] Errore avvio processo Python:', err);
-  });
+  pythonProcess.on('error', err =>
+    console.error('[FastAPI] Spawn error:', err)
+  );
 
   pythonProcess.on('exit', (code, signal) => {
     console.warn(`[Electron] Processo Python terminato (code: ${code}, signal: ${signal})`);
-    pythonProcess = null;
   });
 
-  for (let i = 0; i < 50; i++) {
-    const ready = await checkBackendReady('http://127.0.0.1:8000/api/health');
-    if (ready) {
-      console.log(`[Electron] Backend verificato pronto in ${(i + 1) * 0.5} secondi.`);
+  for (let i = 0; i < 90; i++) {
+    if (await checkAuthenticatedBackend(token)) {
       return true;
     }
-    await new Promise((r) => setTimeout(r, 500));
+
+    if (pythonProcess.exitCode !== null) {
+      throw new Error(
+        `FastAPI terminato durante l'avvio: ${pythonProcess.exitCode}`
+      );
+    }
+
+    await new Promise(resolve => setTimeout(resolve, 500));
   }
 
-  console.warn('[Electron] Backend non ha risposto entro 25s, la finestra viene aperta comunque.');
-  return false;
+  throw new Error('FastAPI non pronto dopo 45 secondi');
 }
 
 function createWindow() {
@@ -183,8 +251,21 @@ app.whenReady().then(async () => {
     }
   );
 
-  await startPythonBackend();
-  createWindow();
+  try {
+    await startPythonBackend();
+    createWindow();
+  } catch (error) {
+    console.error('[Electron] Startup failed:', error);
+
+    const { dialog } = require('electron');
+
+    dialog.showErrorBox(
+      'CoworkerOS non può avviarsi',
+      error.message
+    );
+
+    app.quit();
+  }
 });
 
 app.on('will-quit', () => {
