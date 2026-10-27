@@ -68,14 +68,17 @@ class LocalModelManager:
         self._last_stderr: str = ""
         self._pid: Optional[int] = None
         self._client: Optional[httpx.AsyncClient] = None
+        self._is_server_ready: bool = False
+        self._threads: int = 8
         self.inference_metrics_log: List[Dict[str, Any]] = []
         atexit.register(self.stop_server_sync)
 
     def _get_client(self, timeout: Optional[float] = None) -> httpx.AsyncClient:
-        """Restituisce un client HTTP asincrono riutilizzabile."""
+        """Restituisce un client HTTP asincrono riutilizzabile e persistente."""
         if self._client is None or self._client.is_closed:
             limits = httpx.Limits(max_keepalive_connections=5, max_connections=10, keepalive_expiry=60.0)
-            self._client = httpx.AsyncClient(limits=limits)
+            timeout_cfg = httpx.Timeout(timeout or 180.0, connect=10.0)
+            self._client = httpx.AsyncClient(limits=limits, timeout=timeout_cfg)
         return self._client
 
     async def close_client(self) -> None:
@@ -106,10 +109,14 @@ class LocalModelManager:
         except Exception:
             return False
 
-    def start_server_sync(self, enable_vision: bool = False) -> Dict[str, Any]:
+    def start_server_sync(self, enable_vision: bool = False, threads: Optional[int] = None) -> Dict[str, Any]:
         """Avvio sincrono di llama-server con controlli preventivi di sicurezza."""
+        if threads is not None:
+            self._threads = threads
+
         if self.is_server_healthy():
             self._status = "running"
+            self._is_server_ready = True
             return {
                 "success": True,
                 "message": "llama-server è già attivo e pronto.",
@@ -152,7 +159,7 @@ class LocalModelManager:
             str(LLAMA_SERVER_BIN),
             "-m", str(MODEL_PATH),
             "-c", "4096",
-            "-t", "6",
+            "-t", str(self._threads),
             "-tb", "8",
             "-np", "1",
             "--prio", "2",
@@ -201,6 +208,7 @@ class LocalModelManager:
 
                 if self.is_server_healthy(timeout=0.6):
                     self._status = "running"
+                    self._is_server_ready = True
                     self._last_error = ""
                     return {
                         "success": True,
@@ -213,25 +221,29 @@ class LocalModelManager:
 
             # Timeout
             self._status = "error"
+            self._is_server_ready = False
             self._last_error = "Timeout durante l'avvio di llama-server (35 secondi superati)."
             self.stop_server_sync()
             return {"success": False, "error": self._last_error, "status": "error"}
 
         except Exception as e:
             self._status = "error"
+            self._is_server_ready = False
             self._last_error = f"Errore durante l'avvio del processo: {e}"
             return {"success": False, "error": self._last_error, "status": "error"}
 
-    async def start_server_async(self, enable_vision: bool = False) -> Dict[str, Any]:
+    async def start_server_async(self, enable_vision: bool = False, threads: Optional[int] = None) -> Dict[str, Any]:
         """Avvio asincrono protetto da lock preventivo contro avvii concorrenti."""
         async with self._start_lock:
             if await self.is_server_healthy_async():
                 self._status = "running"
+                self._is_server_ready = True
                 return {"success": True, "status": "running", "message": "Server già attivo."}
-            return await asyncio.to_thread(self.start_server_sync, enable_vision)
+            return await asyncio.to_thread(self.start_server_sync, enable_vision, threads)
 
     def stop_server_sync(self) -> Dict[str, Any]:
         """Arresto controllato di llama-server."""
+        self._is_server_ready = False
         stopped_pid = None
         try:
             if self.process and self.process.poll() is None:
@@ -318,25 +330,36 @@ class LocalModelManager:
         Registra metriche complete senza memorizzare prompt o credenziali.
         """
         req_id = f"qwen_{int(time.time()*1000)}"
-        t_enqueue = time.time()
+        t_start = time.perf_counter()
         model_start_ms = 0.0
 
         async with self._inference_lock:
-            queue_wait_ms = round((time.time() - t_enqueue) * 1000, 1)
+            queue_wait_ms = round((time.perf_counter() - t_start) * 1000, 1)
 
-            # 1. Verifica che il server sia attivo, altrimenti tenta l'avvio controllato
-            if not await self.is_server_healthy_async():
-                t_start_model = time.time()
-                start_res = await self.start_server_async()
-                model_start_ms = round((time.time() - t_start_model) * 1000, 1)
-                if not start_res["success"]:
-                    return {
-                        "success": False,
-                        "error": start_res.get("error", "Impossibile avviare llama-server locale."),
-                        "status": start_res.get("status", "error"),
-                        "queue_wait_ms": queue_wait_ms,
-                        "model_start_ms": model_start_ms,
-                    }
+            # Verifica salute: riutilizza lo stato del processo, ma esegue un nuovo healthcheck
+            # quando il processo è sconosciuto, terminato o la connessione precedente è fallita.
+            need_healthcheck = (
+                not self._is_server_ready
+                or self.process is None
+                or self.process.poll() is not None
+            )
+
+            if need_healthcheck:
+                is_healthy = await self.is_server_healthy_async()
+                if not is_healthy:
+                    t_start_model = time.perf_counter()
+                    start_res = await self.start_server_async()
+                    model_start_ms = round((time.perf_counter() - t_start_model) * 1000, 1)
+                    if not start_res["success"]:
+                        self._is_server_ready = False
+                        return {
+                            "success": False,
+                            "error": start_res.get("error", "Impossibile avviare llama-server locale."),
+                            "status": start_res.get("status", "error"),
+                            "queue_wait_ms": queue_wait_ms,
+                            "model_start_ms": model_start_ms,
+                        }
+                self._is_server_ready = True
 
             is_stream = on_chunk is not None
             payload: Dict[str, Any] = {
@@ -352,19 +375,20 @@ class LocalModelManager:
 
             url = f"{BASE_URL}/v1/chat/completions"
             client = self._get_client(timeout=timeout)
-            t_gen_start = time.time()
+            t_gen_start = time.perf_counter()
             first_token_time: Optional[float] = None
 
             try:
                 if is_stream:
                     async with client.stream("POST", url, json=payload, timeout=timeout) as resp:
                         if resp.status_code != 200:
+                            self._is_server_ready = False
                             body = await resp.aread()
                             return {
                                 "success": False,
                                 "error": f"llama-server ha risposto con codice HTTP {resp.status_code}: {body.decode(errors='replace')}",
                                 "status": "error",
-                                "duration_s": round(time.time() - t_gen_start, 2),
+                                "duration_s": round(time.perf_counter() - t_gen_start, 2),
                             }
 
                         accumulated_content = []
@@ -390,7 +414,7 @@ class LocalModelManager:
                                     chunk_text = delta.get("content", "")
                                     if chunk_text:
                                         if first_token_time is None:
-                                            first_token_time = time.time()
+                                            first_token_time = time.perf_counter()
                                         accumulated_content.append(chunk_text)
                                         if on_chunk:
                                             await on_chunk(chunk_text)
@@ -416,22 +440,25 @@ class LocalModelManager:
 
                         total_tool_calls = [tool_calls_dict[i] for i in sorted(tool_calls_dict.keys())]
                         final_content = "".join(accumulated_content)
-                        t_now = time.time()
+                        t_now = time.perf_counter()
                         generation_ms = round((t_now - t_gen_start) * 1000, 1)
                         ttft_ms = round((first_token_time - t_gen_start) * 1000, 1) if first_token_time else generation_ms
-                        total_ms = round((t_now - t_enqueue) * 1000, 1)
-                        completion_tokens = usage.get("completion_tokens", len(final_content.split()))
-                        prompt_tokens = usage.get("prompt_tokens", 0)
-                        tokens_per_sec = round(completion_tokens / (generation_ms / 1000), 2) if generation_ms > 0 else 0.0
+                        total_ms = round((t_now - t_start) * 1000, 1)
+                        input_tokens = int(usage.get("prompt_tokens") or 0)
+                        output_tokens = int(usage.get("completion_tokens") or len(final_content.split()))
+                        tokens_per_sec = round(output_tokens / (generation_ms / 1000), 2) if generation_ms > 0 else 0.0
 
                         metric_entry = {
                             "request_id": req_id,
                             "provider": "LOCAL_QWEN",
+                            "input_tokens": input_tokens,
+                            "output_tokens": output_tokens,
+                            "prompt_tokens": input_tokens,
+                            "completion_tokens": output_tokens,
                             "queue_wait_ms": queue_wait_ms,
                             "model_start_ms": model_start_ms,
                             "prefill_ms": round(timings.get("prompt_ms", ttft_ms), 1),
-                            "prompt_tokens": prompt_tokens,
-                            "completion_tokens": completion_tokens,
+                            "ttft_ms": ttft_ms,
                             "time_to_first_token_ms": ttft_ms,
                             "generation_ms": generation_ms,
                             "total_ms": total_ms,
@@ -450,10 +477,12 @@ class LocalModelManager:
                         }
                 else:
                     resp = await client.post(url, json=payload, timeout=timeout)
-                    t_now = time.time()
+                    t_now = time.perf_counter()
                     generation_ms = round((t_now - t_gen_start) * 1000, 1)
+                    total_ms = round((t_now - t_start) * 1000, 1)
 
                     if resp.status_code != 200:
+                        self._is_server_ready = False
                         return {
                             "success": False,
                             "error": f"llama-server ha risposto con codice HTTP {resp.status_code}: {resp.text}",
@@ -476,20 +505,23 @@ class LocalModelManager:
                     tool_calls = message.get("tool_calls", [])
                     usage = data.get("usage", {})
                     timings = data.get("timings", {})
-                    total_ms = round((t_now - t_enqueue) * 1000, 1)
-                    completion_tokens = usage.get("completion_tokens", len(content.split()))
-                    prompt_tokens = usage.get("prompt_tokens", 0)
-                    tokens_per_sec = round(completion_tokens / (generation_ms / 1000), 2) if generation_ms > 0 else 0.0
+                    ttft_ms = generation_ms
+                    input_tokens = int(usage.get("prompt_tokens") or 0)
+                    output_tokens = int(usage.get("completion_tokens") or len(content.split()))
+                    tokens_per_sec = round(output_tokens / (generation_ms / 1000), 2) if generation_ms > 0 else 0.0
 
                     metric_entry = {
                         "request_id": req_id,
                         "provider": "LOCAL_QWEN",
+                        "input_tokens": input_tokens,
+                        "output_tokens": output_tokens,
+                        "prompt_tokens": input_tokens,
+                        "completion_tokens": output_tokens,
                         "queue_wait_ms": queue_wait_ms,
                         "model_start_ms": model_start_ms,
                         "prefill_ms": round(timings.get("prompt_ms", 0.0), 1),
-                        "prompt_tokens": prompt_tokens,
-                        "completion_tokens": completion_tokens,
-                        "time_to_first_token_ms": generation_ms,  # non-streaming: ttft coincide col tempo di risposta
+                        "ttft_ms": ttft_ms,
+                        "time_to_first_token_ms": ttft_ms,
                         "generation_ms": generation_ms,
                         "total_ms": total_ms,
                         "tokens_per_second": tokens_per_sec,
@@ -507,12 +539,14 @@ class LocalModelManager:
                     }
 
             except httpx.TimeoutException:
+                self._is_server_ready = False
                 return {
                     "success": False,
                     "error": f"Timeout dell'inferenza locale ({timeout}s superati).",
                     "status": "timeout",
                 }
             except Exception as e:
+                self._is_server_ready = False
                 return {
                     "success": False,
                     "error": f"Errore di comunicazione con llama-server: {e}",

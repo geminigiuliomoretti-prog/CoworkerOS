@@ -257,6 +257,7 @@ async def on_startup() -> None:
 @app.on_event("shutdown")
 async def on_shutdown() -> None:
     await scheduler_service.stop_background_loop()
+    await local_model_mgr.close_client()
     await local_model_mgr.stop_server_async()
 
 
