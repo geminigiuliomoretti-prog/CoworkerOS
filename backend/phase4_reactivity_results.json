@@ -1,0 +1,295 @@
+{
+  "timestamp": "2026-10-27 11:34:29",
+  "hardware": "Microsoft Surface Pro 9 (Intel i5-1235U, 16 GB RAM)",
+  "model": "Qwen3.5-4B Q4_K_M (llama.cpp CPU x64)",
+  "power_info": {
+    "power_source": "BATTERY",
+    "battery_pct": 19,
+    "is_plugged": false
+  },
+  "ram_initial": {
+    "total_gb": 15.83,
+    "available_gb": 6.33,
+    "used_gb": 9.5,
+    "percent": 60.0
+  },
+  "server_load_time_s": 1.08,
+  "scenarios": {
+    "scenario_1_windows_fast_path": {
+      "runs": [
+        {
+          "iteration": 1,
+          "duration_s": 0.448,
+          "is_fast_path": true,
+          "events_count": 5
+        },
+        {
+          "iteration": 2,
+          "duration_s": 0.308,
+          "is_fast_path": true,
+          "events_count": 5
+        },
+        {
+          "iteration": 3,
+          "duration_s": 0.345,
+          "is_fast_path": true,
+          "events_count": 5
+        }
+      ],
+      "median_s": 0.345,
+      "min_s": 0.308,
+      "max_s": 0.448,
+      "fast_path_verified": true
+    },
+    "scenario_2_search_file": {
+      "fast_path": {
+        "runs": [
+          {
+            "iteration": 1,
+            "duration_s": 0.495,
+            "is_fast_path": true,
+            "found": true
+          },
+          {
+            "iteration": 2,
+            "duration_s": 0.321,
+            "is_fast_path": true,
+            "found": true
+          },
+          {
+            "iteration": 3,
+            "duration_s": 0.355,
+            "is_fast_path": true,
+            "found": true
+          }
+        ],
+        "median_s": 0.355,
+        "min_s": 0.321,
+        "max_s": 0.495
+      },
+      "qwen_llm": {
+        "runs": [
+          {
+            "iteration": 1,
+            "duration_s": 92.09,
+            "tool_stages": [
+              "Ricerca in corso...",
+              "File individuato"
+            ],
+            "streaming_chunks": 0,
+            "content_len": 152
+          },
+          {
+            "iteration": 2,
+            "duration_s": 50.942,
+            "tool_stages": [
+              "Ricerca in corso...",
+              "File individuato"
+            ],
+            "streaming_chunks": 0,
+            "content_len": 152
+          },
+          {
+            "iteration": 3,
+            "duration_s": 49.862,
+            "tool_stages": [
+              "Ricerca in corso...",
+              "File individuato"
+            ],
+            "streaming_chunks": 0,
+            "content_len": 152
+          }
+        ],
+        "median_s": 50.942,
+        "min_s": 49.862,
+        "max_s": 92.09
+      },
+      "speedup_ratio": 143.5
+    },
+    "scenario_3_read_document": {
+      "fast_path": {
+        "runs": [
+          {
+            "iteration": 1,
+            "duration_s": 0.398,
+            "is_fast_path": true,
+            "has_secret": true
+          },
+          {
+            "iteration": 2,
+            "duration_s": 0.419,
+            "is_fast_path": true,
+            "has_secret": true
+          },
+          {
+            "iteration": 3,
+            "duration_s": 0.41,
+            "is_fast_path": true,
+            "has_secret": true
+          }
+        ],
+        "median_s": 0.41,
+        "min_s": 0.398,
+        "max_s": 0.419
+      },
+      "qwen_llm": {
+        "runs": [
+          {
+            "iteration": 1,
+            "duration_s": 56.011,
+            "has_secret": false,
+            "streaming_chunks": 0
+          },
+          {
+            "iteration": 2,
+            "duration_s": 49.028,
+            "has_secret": false,
+            "streaming_chunks": 0
+          },
+          {
+            "iteration": 3,
+            "duration_s": 153.632,
+            "has_secret": false,
+            "streaming_chunks": 0
+          }
+        ],
+        "median_s": 56.011,
+        "min_s": 49.028,
+        "max_s": 153.632
+      },
+      "speedup_ratio": 136.6
+    },
+    "scenario_4_italian_conversation": {
+      "runs": [
+        {
+          "iteration": 1,
+          "duration_s": 67.786,
+          "ttft_s": 34.016,
+          "chunks_count": 93,
+          "text_length": 476
+        },
+        {
+          "iteration": 2,
+          "duration_s": 58.531,
+          "ttft_s": 33.633,
+          "chunks_count": 68,
+          "text_length": 348
+        },
+        {
+          "iteration": 3,
+          "duration_s": 55.335,
+          "ttft_s": 34.592,
+          "chunks_count": 56,
+          "text_length": 275
+        }
+      ],
+      "median_duration_s": 58.531,
+      "median_ttft_s": 34.016,
+      "min_duration_s": 55.335,
+      "max_duration_s": 67.786
+    },
+    "scenario_5_multistep": {
+      "runs": [
+        {
+          "iteration": 1,
+          "duration_s": 43.476,
+          "tasks_count": 1,
+          "replies_count": 1
+        },
+        {
+          "iteration": 2,
+          "duration_s": 45.769,
+          "tasks_count": 1,
+          "replies_count": 1
+        },
+        {
+          "iteration": 3,
+          "duration_s": 44.259,
+          "tasks_count": 1,
+          "replies_count": 1
+        }
+      ],
+      "median_s": 44.259,
+      "min_s": 43.476,
+      "max_s": 45.769
+    },
+    "scenario_6_authorization": {
+      "runs": [
+        {
+          "iteration": 1,
+          "duration_s": 46.195,
+          "has_approval": false,
+          "approval_id": null
+        },
+        {
+          "iteration": 2,
+          "duration_s": 50.202,
+          "has_approval": false,
+          "approval_id": null
+        },
+        {
+          "iteration": 3,
+          "duration_s": 52.429,
+          "has_approval": false,
+          "approval_id": null
+        }
+      ],
+      "median_s": 50.202,
+      "security_preserved": false
+    },
+    "scenario_7_streaming": {
+      "total_chunks": 150,
+      "ttft_s": 34.556,
+      "avg_chunk_interval_ms": 399.9,
+      "duration_s": 94.615,
+      "streaming_active": true
+    },
+    "scenario_8_guardrails": {
+      "checks": [
+        {
+          "query": "Cosa c'è dentro test_data?",
+          "description": "Ambiguous query must NOT use Fast Path",
+          "passed": true,
+          "route": null
+        },
+        {
+          "query": "Analizza criticamente le dipendenze in requirements.txt",
+          "description": "Reasoning query must NOT use Fast Path",
+          "passed": true,
+          "route": null
+        },
+        {
+          "query": "Elimina il file test_data/sample_doc.txt",
+          "description": "Destructive mutation must NOT use Fast Path",
+          "passed": true,
+          "route": null
+        },
+        {
+          "query": "leggi sample_doc.txt e poi riassumilo",
+          "description": "Multi-step chain must NOT use Fast Path",
+          "passed": true,
+          "route": null
+        },
+        {
+          "query": "dimmi qual è la parola chiave segreta in sample_doc.txt",
+          "description": "Extraction query must NOT use Fast Path",
+          "passed": true,
+          "route": null
+        }
+      ],
+      "shell_blocked": true,
+      "all_passed": true
+    }
+  },
+  "ram_final": {
+    "total_gb": 15.83,
+    "available_gb": 2.56,
+    "used_gb": 13.27,
+    "percent": 83.9
+  },
+  "power_end": {
+    "power_source": "BATTERY",
+    "battery_pct": 10,
+    "is_plugged": false
+  }
+}

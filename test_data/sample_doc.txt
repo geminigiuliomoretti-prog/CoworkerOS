@@ -1,0 +1,3 @@
+Questo è un documento di prova per CoworkerOS.
+La parola chiave segreta per il test di integrazione è: OMEGA_SURFACE_2026.
+Tutte le verifiche di lettura documento devono identificare questa chiave.

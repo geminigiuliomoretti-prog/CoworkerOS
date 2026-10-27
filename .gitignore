@@ -1,0 +1,75 @@
+# ==========================================
+# CoworkerOS .gitignore
+# ==========================================
+
+# Ambienti virtuali Python
+.venv/
+venv/
+ENV/
+env/
+*/venv/
+*/.venv/
+
+# Cache Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+
+# File di ambiente e credenziali sensibili
+.env
+*.env
+!.env.example
+*.key
+*.pem
+*.cert
+*.pfx
+
+# Database locali e backup
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.db-wal
+*.db-shm
+*.bak
+
+# Dipendenze Node.js / Electron
+node_modules/
+*/node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Build e output compilati
+frontend/dist/
+dist/
+build/
+out/
+
+# Modelli GGUF, pesi AI e binari pesanti
+*.gguf
+*.bin
+*.pt
+*.safetensors
+*.onnx
+
+# Log e file temporanei
+logs/
+*.log
+*.tmp
+*.temp
+
+# Screenshot e file cattura schermo locali
+*.png.tmp
+screenshot*.png
+
+# File di configurazione IDE e OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo

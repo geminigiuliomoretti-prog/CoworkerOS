@@ -1,0 +1,127 @@
+[
+  {
+    "test_num": 1,
+    "title": "Avvio di CoworkerOS e moduli core",
+    "passed": true,
+    "details": "Moduli inizializzati. RAM disponibile: 7.37 GB",
+    "metrics": {
+      "ram_available_gb": 7.37
+    }
+  },
+  {
+    "test_num": 2,
+    "title": "Caricamento Qwen3.5-4B via llama.cpp",
+    "passed": true,
+    "details": "Server pronto in 14.11s (PID: 1192, RSS: 4302.1 MB)",
+    "metrics": {
+      "load_time_s": 14.11,
+      "rss_mb": 4302.1
+    }
+  },
+  {
+    "test_num": 3,
+    "title": "Conversazione in italiano",
+    "passed": true,
+    "details": "Risposta in 78.82s (288 caratteri): 'Ciao! Il mio ruolo come Chief è quello di pianificare e coordinare il lavoro del team, del...'",
+    "metrics": {
+      "duration_s": 78.82,
+      "length": 288
+    }
+  },
+  {
+    "test_num": 4,
+    "title": "Chiamata a uno strumento (list_windows)",
+    "passed": true,
+    "details": "Tool chiamato con successo in 114.94s. Risposta: Ho eseguito l'operazione richiesta. Ecco i risultati raccolti:\n\n🪟 **Finestre Win",
+    "metrics": {
+      "duration_s": 114.94,
+      "tool_found": true
+    }
+  },
+  {
+    "test_num": 5,
+    "title": "Ricerca di un file (search_files)",
+    "passed": true,
+    "details": "Ricerca file eseguita in 128.74s. Risposta: Ho eseguito l'operazione richiesta. Ecco i risultati raccolti:\n\n🔎 **Ricerca File ('sample_",
+    "metrics": {
+      "duration_s": 128.74,
+      "tool_executed": true
+    }
+  },
+  {
+    "test_num": 6,
+    "title": "Lettura di un documento reale (read_document)",
+    "passed": true,
+    "details": "Parola chiave segreta rilevata: True in 70.84s.",
+    "metrics": {
+      "duration_s": 70.84,
+      "has_secret": true
+    }
+  },
+  {
+    "test_num": 7,
+    "title": "Analisi archivio ZIP sicuro (inspect_zip)",
+    "passed": true,
+    "details": "ZIP ispezionato senza estrazione su disco in 80.84s. Risposta: Ho eseguito l'operazione richiesta. Ecco i risultati raccolti:\n\n📦 **Archivio ZIP ('test_da",
+    "metrics": {
+      "duration_s": 80.84,
+      "has_code": true
+    }
+  },
+  {
+    "test_num": 8,
+    "title": "Navigazione browser web sicura (browse_url)",
+    "passed": true,
+    "details": "Pagina web consultata in 107.89s. Token trovato: True.",
+    "metrics": {
+      "duration_s": 107.89,
+      "has_token": true
+    }
+  },
+  {
+    "test_num": 9,
+    "title": "Gestione controllata degli errori",
+    "passed": true,
+    "details": "Errore gestito correttamente senza blocchi in 107.47s: Eseguirò la richiesta utilizzando lo strumento `read_document` per tentare di leggere il f",
+    "metrics": {
+      "duration_s": 107.47
+    }
+  },
+  {
+    "test_num": 10,
+    "title": "Attività multi-step con coordinamento strumenti",
+    "passed": true,
+    "details": "Catena multi-step eseguita in 161.33s: Ecco i risultati dei due passaggi richiesti:\n\n**1. Ricerca file con 'sample' nel nome:**\nH",
+    "metrics": {
+      "duration_s": 161.33,
+      "tools": [
+        "read_document",
+        "browse_url",
+        "inspect_zip"
+      ]
+    }
+  },
+  {
+    "test_num": 11,
+    "title": "Cambio provider LOCAL / CLOUD / AUTO",
+    "passed": true,
+    "details": "Modalità commutate e verificate con persistenza DB (CLOUD -> AUTO -> LOCAL).",
+    "metrics": {
+      "modes": [
+        "CLOUD",
+        "AUTO",
+        "LOCAL"
+      ]
+    }
+  },
+  {
+    "test_num": 12,
+    "title": "Arresto controllato di llama-server",
+    "passed": true,
+    "details": "Server arrestato in 3.67s. Porta 8080 rilasciata. RAM residua: 7.22 GB.",
+    "metrics": {
+      "duration_s": 3.67,
+      "ram_freed_gb": 7.22
+    }
+  }
+]

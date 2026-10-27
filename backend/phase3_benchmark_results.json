@@ -1,0 +1,76 @@
+[
+  {
+    "id": "conversazione",
+    "name": "Conversazione in italiano",
+    "tempo_precedente_s": 78.82,
+    "tempo_nuovo_s": 46.25,
+    "miglioramento_pct": 41.3,
+    "prompt_tokens": 243,
+    "completion_tokens": 68,
+    "reasoning_tokens": 0,
+    "llm_calls": 1,
+    "tool_calls": 0,
+    "tools_executed": [],
+    "gen_speed_tok_s": 1.5,
+    "orchestrazione_s": 0.95,
+    "ram_avail_gb": 2.98,
+    "content_preview": "Il mio ruolo è coordinare il team di bot (architect, builder, scout, archivist) per pianificare e gestire il lavoro di sviluppo senza che tu debba intervenire manualmente. Ti forni"
+  },
+  {
+    "id": "tool_calling",
+    "name": "Chiamata a uno strumento (list_windows)",
+    "tempo_precedente_s": 114.94,
+    "tempo_nuovo_s": 41.21,
+    "miglioramento_pct": 64.1,
+    "prompt_tokens": 515,
+    "completion_tokens": 14,
+    "reasoning_tokens": 0,
+    "llm_calls": 1,
+    "tool_calls": 1,
+    "tools_executed": [
+      "list_windows"
+    ],
+    "gen_speed_tok_s": 0.35,
+    "orchestrazione_s": 0.63,
+    "ram_avail_gb": 2.88,
+    "content_preview": "Ho eseguito l'operazione richiesta. Ecco i risultati raccolti:  🪟 **Finestre Windows:** 0 attive (`Nessuna`)."
+  },
+  {
+    "id": "ricerca_file",
+    "name": "Ricerca di un file (search_files)",
+    "tempo_precedente_s": 128.74,
+    "tempo_nuovo_s": 50.77,
+    "miglioramento_pct": 60.6,
+    "prompt_tokens": 542,
+    "completion_tokens": 39,
+    "reasoning_tokens": 0,
+    "llm_calls": 1,
+    "tool_calls": 1,
+    "tools_executed": [
+      "search_files"
+    ],
+    "gen_speed_tok_s": 0.78,
+    "orchestrazione_s": 0.56,
+    "ram_avail_gb": 2.76,
+    "content_preview": "Ho eseguito l'operazione richiesta. Ecco i risultati raccolti:  🔎 **Ricerca File ('sample_doc.txt'):** Trovati 1 risultati (`test_data/sample_doc.txt`)."
+  },
+  {
+    "id": "multistep",
+    "name": "Attività multi-step coordinata",
+    "tempo_precedente_s": 161.33,
+    "tempo_nuovo_s": 14.5,
+    "miglioramento_pct": 91.0,
+    "prompt_tokens": 552,
+    "completion_tokens": 25,
+    "reasoning_tokens": 0,
+    "llm_calls": 1,
+    "tool_calls": 1,
+    "tools_executed": [
+      "search_files"
+    ],
+    "gen_speed_tok_s": 1.79,
+    "orchestrazione_s": 0.55,
+    "ram_avail_gb": 2.66,
+    "content_preview": "Ho eseguito l'operazione richiesta. Ecco i risultati raccolti:  🔎 **Ricerca File ('sample'):** Trovati 2 risultati (`test_data/sample_archive.zip, test_data/sample_doc.txt`)."
+  }
+]

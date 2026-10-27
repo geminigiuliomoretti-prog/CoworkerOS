@@ -1,0 +1,27 @@
+{
+  "name": "coworkeros",
+  "version": "1.0.0",
+  "description": "CoworkerOS - Native Desktop Standalone App",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "electron .",
+    "build:desktop": "cd frontend && npm run build && cd .. && electron-builder"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "cross-env": "^7.0.3",
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8",
+    "wait-on": "^8.0.1"
+  },
+  "build": {
+    "appId": "com.coworkeros.app",
+    "productName": "CoworkerOS",
+    "directories": {
+      "output": "dist-desktop"
+    },
+    "win": {
+      "icon": "electron/icon.ico"
+    }
+  }
+}
