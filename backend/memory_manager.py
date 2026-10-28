@@ -62,9 +62,15 @@ class MemoryManager:
             return ""
         # Rimuove tag XML/system simulati
         cleaned = re.sub(r"<\/?(system|instructions?|prompt|admin|tool|assistant)[^>]*>", "", text, flags=re.IGNORECASE)
-        # Neutralizza direttive imperative tipiche di jailbreak
-        cleaned = cleaned.replace("IGNORE PREVIOUS INSTRUCTIONS", "[BLOCKED INSTRUCTION]")
-        cleaned = cleaned.replace("DISREGARD ALL INSTRUCTIONS", "[BLOCKED INSTRUCTION]")
+        # Neutralizza direttive imperative tipiche di jailbreak (inglese e italiano)
+        injection_patterns = [
+            r"(?i)\bignore\s+(?:all\s+)?previous\s+instructions\b",
+            r"(?i)\bdisregard\s+all\s+instructions\b",
+            r"(?i)\bignora\s+(?:tutte\s+)?(?:le\s+)?istruzioni\s+precedenti\b",
+            r"(?i)\bignora\s+tutte\s+le\s+istruzioni\b",
+        ]
+        for pattern in injection_patterns:
+            cleaned = re.sub(pattern, "[BLOCKED INSTRUCTION]", cleaned)
         return cleaned.strip()
 
     # ========================================================================

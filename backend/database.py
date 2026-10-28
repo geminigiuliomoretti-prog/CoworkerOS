@@ -41,7 +41,7 @@ DEFAULT_BOTS = [
         "name": "Chief",
         "role": "Coordinator & Chief of Staff",
         "system_prompt": (
-            "Sei Chief. Analizzi le richieste dell utente, pianifichi il lavoro e usi il tool "
+            "Sei Chief. Analizzi le richieste dell utente, pianifichi il lavoro, consulti email e calendario in sola lettura, e usi il tool "
             "delegate_to_coworker per passare i compiti agli altri bot (architect, builder, scout, archivist) "
             "senza che l utente debba fare nulla."
         ),
@@ -78,7 +78,7 @@ DEFAULT_BOTS = [
         "name": "Scout",
         "role": "Web & Deep Researcher",
         "system_prompt": (
-            "Sei Scout. Esegui ricerche web approfondite, raccogli documentazione e analizzi fonti esterne "
+            "Sei Scout. Esegui ricerche web approfondite, consulti email e calendario in sola lettura, raccogli documentazione e analizzi fonti esterne "
             "per fornire sintesi pronte all uso per il team."
         ),
         "shape": "cloud",
@@ -107,6 +107,9 @@ def get_connection() -> sqlite3.Connection:
     conn = sqlite3.connect(str(db_file), check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA synchronous=NORMAL;")
+    conn.execute("PRAGMA temp_store=MEMORY;")
+    conn.execute("PRAGMA cache_size=-20000;")
     conn.execute("PRAGMA foreign_keys=ON;")
     return conn
 
@@ -405,10 +408,15 @@ def init_db() -> None:
                     total_tokens INTEGER,
                     estimated_cost_usd REAL DEFAULT 0.0,
                     is_estimated INTEGER DEFAULT 1,
-                    duration_ms INTEGER DEFAULT 0
+                    duration_ms INTEGER DEFAULT 0,
+                    time_to_first_chunk_ms INTEGER
                 );
                 """
             )
+            cursor = conn.execute("PRAGMA table_info(usage_records);")
+            usage_cols = [row["name"] for row in cursor.fetchall()]
+            if "time_to_first_chunk_ms" not in usage_cols:
+                conn.execute("ALTER TABLE usage_records ADD COLUMN time_to_first_chunk_ms INTEGER;")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS usage_limits (
@@ -455,6 +463,17 @@ def init_db() -> None:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_notifications_unread ON notifications(is_read, created_at);"
             )
+            # Indici per ottimizzazione query WHERE frequenti (chat_id, task_id, status, bot_id, next_run)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_bot_id ON tasks(bot_id);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_approvals_chat_id ON approvals(chat_id);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_approvals_bot_id ON approvals(bot_id);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_activities_task_id ON activities(task_id);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_activities_status ON activities(status);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_activities_bot_id ON activities(bot_id);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_records_chat_id ON usage_records(chat_id);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_scheduled_jobs_chat_id ON scheduled_jobs(chat_id);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_scheduled_jobs_next_run_at ON scheduled_jobs(next_run_at);")
     finally:
         conn.close()
 
@@ -1898,6 +1917,18 @@ def get_job_executions(
 
 # --- CONSUMI & QUOTE ---
 
+def _calc_percentile(values: list[float | int], p: float) -> float | int | None:
+    """Calcola il percentile (es. 50 o 95) su una lista di valori con interpolazione lineare."""
+    if not values:
+        return None
+    sorted_vals = sorted(values)
+    k = (len(sorted_vals) - 1) * (p / 100.0)
+    f = int(k)
+    c = min(f + 1, len(sorted_vals) - 1)
+    d = k - f
+    return round(sorted_vals[f] + d * (sorted_vals[c] - sorted_vals[f]), 2)
+
+
 def record_usage(
     model_name: str,
     task_id: str | None = None,
@@ -1907,6 +1938,7 @@ def record_usage(
     output_tokens: int | None = None,
     estimated_cost_usd: float = 0.0,
     duration_ms: int = 0,
+    time_to_first_chunk_ms: int | None = None,
     is_estimated: int = 1,
 ) -> dict[str, Any]:
     """Registra una transazione di utilizzo del modello (senza inventare token se non forniti)."""
@@ -1923,8 +1955,8 @@ def record_usage(
                 INSERT INTO usage_records (
                     id, timestamp, model_name, task_id, chat_id, job_id,
                     input_tokens, output_tokens, total_tokens, estimated_cost_usd,
-                    is_estimated, duration_ms
-                ) VALUES (?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    is_estimated, duration_ms, time_to_first_chunk_ms
+                ) VALUES (?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                 """,
                 (
                     usage_id,
@@ -1938,6 +1970,7 @@ def record_usage(
                     estimated_cost_usd,
                     is_estimated,
                     duration_ms,
+                    time_to_first_chunk_ms,
                 ),
             )
         return {
@@ -1951,6 +1984,8 @@ def record_usage(
             "total_tokens": total_tokens,
             "estimated_cost_usd": estimated_cost_usd,
             "is_estimated": is_estimated,
+            "duration_ms": duration_ms,
+            "time_to_first_chunk_ms": time_to_first_chunk_ms,
         }
     finally:
         conn.close()
@@ -2017,6 +2052,30 @@ def get_usage_summary(
                 "cost": r_t["cost"] if r_t else 0.0,
             }
 
+        # Calcolo latenze p50 e p95 di duration_ms e time_to_first_chunk_ms
+        where_clauses = ["timestamp >= datetime('now', '-' || ? || ' day')"]
+        query_params: list[Any] = [days]
+        if chat_id:
+            where_clauses.append("chat_id = ?")
+            query_params.append(chat_id)
+        if task_id:
+            where_clauses.append("task_id = ?")
+            query_params.append(task_id)
+
+        where_sql = " AND ".join(where_clauses)
+        cursor_lat = conn.execute(
+            f"SELECT duration_ms, time_to_first_chunk_ms FROM usage_records WHERE {where_sql};",
+            query_params,
+        )
+        lat_rows = cursor_lat.fetchall()
+        durations = [r["duration_ms"] for r in lat_rows if r["duration_ms"] is not None]
+        ttfc_list = [r["time_to_first_chunk_ms"] for r in lat_rows if r["time_to_first_chunk_ms"] is not None]
+
+        p50_duration = _calc_percentile(durations, 50)
+        p95_duration = _calc_percentile(durations, 95)
+        p50_ttfc = _calc_percentile(ttfc_list, 50)
+        p95_ttfc = _calc_percentile(ttfc_list, 95)
+
         return {
             "period_days": days,
             "requests_count": tot_requests,
@@ -2027,6 +2086,14 @@ def get_usage_summary(
             "is_estimate_notice": "Stima puramente indicativa dei consumi, non costituisce fatturazione reale.",
             "by_model": by_model,
             "task_usage": task_usage,
+            "duration_ms_p50": p50_duration,
+            "duration_ms_p95": p95_duration,
+            "time_to_first_chunk_ms_p50": p50_ttfc,
+            "time_to_first_chunk_ms_p95": p95_ttfc,
+            "latency": {
+                "duration_ms": {"p50": p50_duration, "p95": p95_duration},
+                "time_to_first_chunk_ms": {"p50": p50_ttfc, "p95": p95_ttfc},
+            },
         }
     finally:
         conn.close()

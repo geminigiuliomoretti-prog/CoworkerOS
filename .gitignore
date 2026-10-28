@@ -25,6 +25,9 @@ __pycache__/
 *.pem
 *.cert
 *.pfx
+.google_token.json
+*.google_token.json
+backend/.google_token.json
 
 # Database locali e backup
 *.db
@@ -73,3 +76,15 @@ Thumbs.db
 .vscode/
 *.swp
 *.swo
+
+# Sandbox isolata e file token
+sandbox/downloads/
+*token*.json
+*token*.txt
+*cookies*.json
+*client_secrets*.json
+
+# Dump e log di debug temporanei
+1_backend_core.txt
+2_electron.txt
+3_frontend.txt

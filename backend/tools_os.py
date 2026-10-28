@@ -20,6 +20,11 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.resolve()
 FORBIDDEN_FILES = {".env", "coworkers.db", "coworkers.db.bak"}
 
 
+def is_desktop_control_enabled() -> bool:
+    """Verifica se il controllo del desktop reale è abilitato (DESKTOP_CONTROL_ENABLED). Default false."""
+    return os.getenv("DESKTOP_CONTROL_ENABLED", "false").strip().lower() in ("true", "1", "yes")
+
+
 def get_allowed_roots() -> List[Path]:
     """Returns the list of explicitly authorized workspace directories."""
     roots = [PROJECT_ROOT]
@@ -472,6 +477,8 @@ def list_open_windows() -> Dict[str, Any]:
 
 
 def force_activate_window(window_title_substring: str) -> Dict[str, Any]:
+    if not is_desktop_control_enabled():
+        return {"status": "error", "blocked": True, "message": "Controllo desktop disattivato"}
     target_sub = window_title_substring.strip().lower()
     win_data = list_open_windows().get("windows_detailed", [])
 
@@ -576,6 +583,8 @@ def click_at_normalized_coords(
             "text_to_type": text_to_type,
             "message": f"Clic alle coordinate ({norm_x}, {norm_y}) sul desktop richiede approvazione esplicita dell'utente.",
         }
+    if not is_desktop_control_enabled():
+        return {"status": "error", "blocked": True, "message": "Controllo desktop disattivato"}
 
     try:
         real_x, real_y = norm_to_physical_coords(norm_x, norm_y)
@@ -617,6 +626,8 @@ def focus_and_paste_into_app(
     press_enter: bool = True,
     approved: bool = False,
 ) -> Dict[str, Any]:
+    if not is_desktop_control_enabled():
+        return {"status": "error", "blocked": True, "message": "Controllo desktop disattivato"}
     if not approved:
         return {
             "status": "waiting_approval",
@@ -919,6 +930,14 @@ def inspect_zip(zip_path: str, action: str = "list", file_to_read: Optional[str]
         return {"status": "error", "message": f"Errore ispezione archivio ZIP: {e}"}
 
 
+# Client HTTP riutilizzato a livello di modulo per connessioni persistenti (timeout=10)
+_BROWSER_HTTP_CLIENT = httpx.Client(
+    timeout=10.0,
+    follow_redirects=True,
+    headers={"User-Agent": "CoworkerOS/1.0 (Windows 11; x64; Research Agent)"},
+)
+
+
 def browse_url(url: str, max_chars: int = 5000) -> Dict[str, Any]:
     """
     Legge il contenuto testuale di una pagina web tramite richiesta HTTP sicura in sola lettura.
@@ -928,11 +947,9 @@ def browse_url(url: str, max_chars: int = 5000) -> Dict[str, Any]:
         return {"status": "error", "message": "URL non valido: deve iniziare con http:// o https://"}
 
     try:
-        headers = {"User-Agent": "CoworkerOS/1.0 (Windows 11; x64; Research Agent)"}
-        with httpx.Client(timeout=10.0, follow_redirects=True, headers=headers) as client:
-            resp = client.get(clean_url)
-            if resp.status_code >= 400:
-                return {"status": "error", "message": f"Il server remoto ha risposto con codice HTTP {resp.status_code}."}
+        resp = _BROWSER_HTTP_CLIENT.get(clean_url)
+        if resp.status_code >= 400:
+            return {"status": "error", "message": f"Il server remoto ha risposto con codice HTTP {resp.status_code}."}
 
             content_type = resp.headers.get("content-type", "").lower()
             if "text" not in content_type and "json" not in content_type and "html" not in content_type:

@@ -51,6 +51,7 @@ class UsageTracker:
         input_tokens: Optional[int] = None,
         output_tokens: Optional[int] = None,
         duration_ms: int = 0,
+        time_to_first_chunk_ms: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Registra la chiamata del modello con metadati reali o null."""
         cost_est = self.estimate_cost_usd(model_name, input_tokens, output_tokens)
@@ -63,6 +64,7 @@ class UsageTracker:
             output_tokens=output_tokens,
             estimated_cost_usd=cost_est,
             duration_ms=duration_ms,
+            time_to_first_chunk_ms=time_to_first_chunk_ms,
             is_estimated=1,
         )
 

@@ -14,6 +14,8 @@ from google.genai import types
 
 import database as db
 import tools_os
+import tools_browser
+import tools_google
 from memory_manager import memory_manager
 from usage_tracker import usage_tracker
 from notifications import notification_manager
@@ -245,6 +247,41 @@ def _build_gemini_tools() -> List[types.Tool]:
             ),
         ),
         types.FunctionDeclaration(
+            name="gmail_search",
+            description="Cerca email nella casella Gmail dell'utente in sola lettura (restituisce mittente, oggetto, data e snippet).",
+            parameters=types.Schema(
+                type="OBJECT",
+                properties={
+                    "query": types.Schema(type="STRING", description="Query di ricerca Gmail (es. 'from:mario', 'fattura', 'is:unread')."),
+                    "max_results": types.Schema(type="INTEGER", description="Numero massimo di email da restituire (default 10)."),
+                },
+                required=["query"],
+            ),
+        ),
+        types.FunctionDeclaration(
+            name="gmail_read",
+            description="Legge il corpo testuale di una specifica email da Gmail tramite message_id (in sola lettura, testo pulito senza HTML).",
+            parameters=types.Schema(
+                type="OBJECT",
+                properties={
+                    "message_id": types.Schema(type="STRING", description="ID univoco del messaggio Gmail da leggere."),
+                    "max_chars": types.Schema(type="INTEGER", description="Numero massimo di caratteri da restituire (default 4000)."),
+                },
+                required=["message_id"],
+            ),
+        ),
+        types.FunctionDeclaration(
+            name="calendar_list_events",
+            description="Elenca gli eventi in programma su Google Calendar in sola lettura.",
+            parameters=types.Schema(
+                type="OBJECT",
+                properties={
+                    "days_ahead": types.Schema(type="INTEGER", description="Giorni futuri da consultare a partire da oggi (default 7)."),
+                    "max_results": types.Schema(type="INTEGER", description="Numero massimo di eventi da restituire (default 20)."),
+                },
+            ),
+        ),
+        types.FunctionDeclaration(
             name="list_windows",
             description="Elenca le finestre aperte sul desktop Windows 11 con i rispettivi titoli.",
             parameters=types.Schema(
@@ -252,6 +289,48 @@ def _build_gemini_tools() -> List[types.Tool]:
                 properties={
                     "filter_str": types.Schema(type="STRING", description="Filtro opzionale sul titolo della finestra."),
                 },
+            ),
+        ),
+        types.FunctionDeclaration(
+            name="browser_open",
+            description="Apre un URL nel browser isolato sandbox (Docker). Lettura sicura senza effetti collaterali.",
+            parameters=types.Schema(
+                type="OBJECT",
+                properties={
+                    "url": types.Schema(type="STRING", description="URL completo da aprire nel browser sandbox (es. https://example.com)."),
+                },
+                required=["url"],
+            ),
+        ),
+        types.FunctionDeclaration(
+            name="browser_snapshot",
+            description="Restituisce l'albero di accessibilità semantico della pagina web nel browser sandbox con riferimenti numerici [ref].",
+            parameters=types.Schema(
+                type="OBJECT",
+                properties={},
+            ),
+        ),
+        types.FunctionDeclaration(
+            name="browser_click",
+            description="Esegue un clic su un elemento nel browser sandbox tramite il suo riferimento numerico [ref]. Richiede approvazione utente.",
+            parameters=types.Schema(
+                type="OBJECT",
+                properties={
+                    "ref": types.Schema(type="INTEGER", description="Riferimento numerico [ref] dell'elemento da cliccare."),
+                },
+                required=["ref"],
+            ),
+        ),
+        types.FunctionDeclaration(
+            name="browser_type",
+            description="Digita testo in un campo del browser sandbox tramite riferimento numerico [ref]. Richiede approvazione utente.",
+            parameters=types.Schema(
+                type="OBJECT",
+                properties={
+                    "ref": types.Schema(type="INTEGER", description="Riferimento numerico [ref] del campo di input."),
+                    "text": types.Schema(type="STRING", description="Testo da digitare nel campo."),
+                },
+                required=["ref", "text"],
             ),
         ),
     ]
@@ -355,6 +434,50 @@ def _build_openai_tools() -> List[Dict[str, Any]]:
         {
             "type": "function",
             "function": {
+                "name": "gmail_search",
+                "description": "Cerca email nella casella Gmail dell'utente in sola lettura (restituisce mittente, oggetto, data e snippet).",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Query di ricerca Gmail (es. 'from:mario', 'fattura', 'is:unread')."},
+                        "max_results": {"type": "integer", "description": "Numero massimo di email da restituire (default 10)."}
+                    },
+                    "required": ["query"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "gmail_read",
+                "description": "Legge il corpo testuale di una specifica email da Gmail tramite message_id (in sola lettura, testo pulito senza HTML).",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "message_id": {"type": "string", "description": "ID univoco del messaggio Gmail da leggere."},
+                        "max_chars": {"type": "integer", "description": "Numero massimo di caratteri da restituire (default 4000)."}
+                    },
+                    "required": ["message_id"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "calendar_list_events",
+                "description": "Elenca gli eventi in programma su Google Calendar in sola lettura.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "days_ahead": {"type": "integer", "description": "Giorni futuri da consultare a partire da oggi (default 7)."},
+                        "max_results": {"type": "integer", "description": "Numero massimo di eventi da restituire (default 20)."}
+                    }
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "list_windows",
                 "description": "Elenca le finestre attualmente aperte sul desktop Windows 11 con i rispettivi titoli.",
                 "parameters": {
@@ -443,6 +566,60 @@ def _build_openai_tools() -> List[Dict[str, Any]]:
                     "required": ["window_title_substring", "text_to_paste"]
                 }
             }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "browser_open",
+                "description": "Apre un URL nel browser isolato sandbox (Docker). Lettura sicura senza effetti collaterali.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string", "description": "URL completo da aprire nel browser sandbox (es. https://example.com)."}
+                    },
+                    "required": ["url"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "browser_snapshot",
+                "description": "Restituisce l'albero di accessibilità semantico della pagina web nel browser sandbox con riferimenti numerici [ref].",
+                "parameters": {
+                    "type": "object",
+                    "properties": {}
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "browser_click",
+                "description": "Esegue un clic su un elemento nel browser sandbox tramite il suo riferimento numerico [ref]. Richiede approvazione utente.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "ref": {"type": "integer", "description": "Riferimento numerico [ref] dell'elemento su cui cliccare."}
+                    },
+                    "required": ["ref"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "browser_type",
+                "description": "Digita testo in un campo del browser sandbox tramite riferimento numerico [ref]. Richiede approvazione utente.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "ref": {"type": "integer", "description": "Riferimento numerico [ref] del campo di input."},
+                        "text": {"type": "string", "description": "Testo da inserire nel campo."}
+                    },
+                    "required": ["ref", "text"]
+                }
+            }
         }
     ]
 
@@ -453,7 +630,29 @@ class AgentOrchestrator:
         self.client: Optional[genai.Client] = None
         self.tools = _build_gemini_tools()
         self.openai_tools = _build_openai_tools()
+        self._gemini_tools_cache: Dict[frozenset[str], List[types.Tool]] = {}
+        self._model_cooldown: Dict[str, float] = {}
         self.reload_client()
+
+    def _gemini_tools_for(self, names: frozenset[str]) -> List[types.Tool]:
+        """
+        Filtra le function declarations di self.tools per nome con cache su frozenset.
+        """
+        if not names:
+            return []
+        if names in self._gemini_tools_cache:
+            return self._gemini_tools_cache[names]
+
+        if not self.tools or not hasattr(self.tools[0], "function_declarations"):
+            return []
+
+        filtered_decls = [
+            decl for decl in self.tools[0].function_declarations
+            if getattr(decl, "name", "") in names
+        ]
+        result = [types.Tool(function_declarations=filtered_decls)] if filtered_decls else []
+        self._gemini_tools_cache[names] = result
+        return result
 
     def get_provider_mode(self) -> str:
         return str(db.get_app_setting("llm_provider_mode", "AUTO")).upper()
@@ -542,7 +741,9 @@ class AgentOrchestrator:
         contents: Any,
         system_instruction: str,
         enable_tools: bool = True,
+        tools_override: Optional[List[types.Tool]] = None,
         temperature: float = 0.35,
+        max_output_tokens: int = 1024,
         task_id: Optional[str] = None,
         chat_id: Optional[str] = None,
     ) -> Tuple[Optional[types.GenerateContentResponse], str, Optional[str]]:
@@ -565,14 +766,21 @@ class AgentOrchestrator:
         models_to_try = [MODEL_PRIMARY] + MODEL_FALLBACKS
         last_error = ""
 
+        chosen_tools = (tools_override if tools_override is not None else self.tools) if enable_tools else None
         config = types.GenerateContentConfig(
             system_instruction=system_instruction,
             temperature=temperature,
-            tools=self.tools if enable_tools else None,
+            max_output_tokens=max_output_tokens,
+            tools=chosen_tools,
             automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True) if enable_tools else None,
         )
 
+        now = time.time()
         for model_name in models_to_try:
+            # Salta modelli attualmente in cooldown per errori 429/RESOURCE_EXHAUSTED/404
+            if self._model_cooldown.get(model_name, 0) > now:
+                continue
+
             for attempt in range(2):
                 start_call = time.time()
                 try:
@@ -595,11 +803,17 @@ class AgentOrchestrator:
                         input_tokens=in_tokens,
                         output_tokens=out_tokens,
                         duration_ms=duration_ms,
+                        time_to_first_chunk_ms=duration_ms,
                     )
                     return response, model_name, None
                 except Exception as exc:
                     err_str = str(exc)
                     last_error = err_str
+
+                    # Cooldown 60s se il modello dà 429/RESOURCE_EXHAUSTED/404/NOT_FOUND
+                    if any(code in err_str for code in ("429", "RESOURCE_EXHAUSTED", "404", "NOT_FOUND")):
+                        self._model_cooldown[model_name] = time.time() + 60.0
+
                     is_transient = any(
                         code in err_str
                         for code in (
@@ -610,14 +824,180 @@ class AgentOrchestrator:
                     if "404" in err_str or "NOT_FOUND" in err_str:
                         break
                     if is_transient and attempt == 0:
-                        await asyncio.sleep(0.8)
+                        await asyncio.sleep(0.3)
                         continue
                     break
 
         return None, MODEL_PRIMARY, last_error
 
+    async def _call_gemini_stream(
+        self,
+        contents: Any,
+        system_instruction: str,
+        on_chunk: Optional[Callable[[str], Awaitable[None]]] = None,
+        enable_tools: bool = True,
+        tools_override: Optional[List[types.Tool]] = None,
+        temperature: float = 0.35,
+        max_output_tokens: int = 1024,
+        task_id: Optional[str] = None,
+        chat_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Esegue la chiamata streaming verso Gemini Cloud con fallback, accumulo chunk e tracciamento TTFC.
+        """
+        if not self.client:
+            if not self.reload_client():
+                return {
+                    "success": False,
+                    "error": "GEMINI_API_KEY non configurata. Inseriscila dalle Impostazioni (icona ingranaggio).",
+                    "model_name": MODEL_PRIMARY,
+                    "provider": "CLOUD",
+                    "assistant_text": "",
+                    "function_calls": [],
+                }
+
+        is_ok, limit_msg = usage_tracker.check_limits(task_id=task_id)
+        if not is_ok:
+            try:
+                await notification_manager.notify_limit_reached(
+                    title="Quota consumi raggiunta",
+                    reason=limit_msg or "Limite richieste o token superato.",
+                )
+            except Exception:
+                pass
+            return {
+                "success": False,
+                "error": f"Quota superata: {limit_msg}",
+                "model_name": MODEL_PRIMARY,
+                "provider": "CLOUD",
+                "assistant_text": "",
+                "function_calls": [],
+            }
+
+        models_to_try = [MODEL_PRIMARY] + MODEL_FALLBACKS
+        last_error = ""
+
+        chosen_tools = (tools_override if tools_override is not None else self.tools) if enable_tools else None
+        config = types.GenerateContentConfig(
+            system_instruction=system_instruction,
+            temperature=temperature,
+            max_output_tokens=max_output_tokens,
+            tools=chosen_tools,
+            automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True) if enable_tools else None,
+        )
+
+        now = time.time()
+        for model_name in models_to_try:
+            if self._model_cooldown.get(model_name, 0) > now:
+                continue
+
+            for attempt in range(2):
+                start_call = time.time()
+                time_to_first_chunk_ms = None
+                norm_fcalls = []
+                accumulated_text = []
+                in_tokens = None
+                out_tokens = None
+                stream_started = False
+                try:
+                    stream = await self.client.aio.models.generate_content_stream(
+                        model=model_name,
+                        contents=contents,
+                        config=config,
+                    )
+                    async for chunk in stream:
+                        txt = getattr(chunk, "text", None)
+                        if txt:
+                            if time_to_first_chunk_ms is None:
+                                time_to_first_chunk_ms = int((time.time() - start_call) * 1000)
+                            stream_started = True
+                            accumulated_text.append(txt)
+                            if on_chunk:
+                                await on_chunk(txt)
+
+                        fcalls = getattr(chunk, "function_calls", None)
+                        if fcalls:
+                            if time_to_first_chunk_ms is None:
+                                time_to_first_chunk_ms = int((time.time() - start_call) * 1000)
+                            for fc in fcalls:
+                                norm_fcalls.append({
+                                    "name": fc.name,
+                                    "args": dict(fc.args) if fc.args else {},
+                                    "id": getattr(fc, "id", None),
+                                })
+
+                        if hasattr(chunk, "usage_metadata") and chunk.usage_metadata:
+                            p_tok = getattr(chunk.usage_metadata, "prompt_token_count", None)
+                            c_tok = getattr(chunk.usage_metadata, "candidates_token_count", None)
+                            if p_tok is not None:
+                                in_tokens = p_tok
+                            if c_tok is not None:
+                                out_tokens = c_tok
+
+                    duration_ms = int((time.time() - start_call) * 1000)
+                    if time_to_first_chunk_ms is None:
+                        time_to_first_chunk_ms = duration_ms
+
+                    usage_tracker.record_model_call(
+                        model_name=model_name,
+                        task_id=task_id,
+                        chat_id=chat_id,
+                        input_tokens=in_tokens,
+                        output_tokens=out_tokens,
+                        duration_ms=duration_ms,
+                        time_to_first_chunk_ms=time_to_first_chunk_ms,
+                    )
+                    return {
+                        "success": True,
+                        "assistant_text": "".join(accumulated_text).strip(),
+                        "function_calls": norm_fcalls,
+                        "model_name": model_name,
+                        "provider": "CLOUD",
+                        "error": None,
+                    }
+                except Exception as exc:
+                    err_str = str(exc)
+                    last_error = err_str
+
+                    if any(code in err_str for code in ("429", "RESOURCE_EXHAUSTED", "404", "NOT_FOUND")):
+                        self._model_cooldown[model_name] = time.time() + 60.0
+
+                    if stream_started:
+                        break
+
+                    is_transient = any(
+                        code in err_str
+                        for code in (
+                            "503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED",
+                            "500", "overloaded", "504", "DEADLINE_EXCEEDED"
+                        )
+                    )
+                    if "404" in err_str or "NOT_FOUND" in err_str:
+                        break
+                    if is_transient and attempt == 0:
+                        await asyncio.sleep(0.3)
+                        continue
+                    break
+
+        return {
+            "success": False,
+            "error": last_error or "Errore sconosciuto Gemini Cloud (streaming).",
+            "model_name": MODEL_PRIMARY,
+            "provider": "CLOUD",
+            "assistant_text": "".join(accumulated_text).strip() if 'accumulated_text' in locals() else "",
+            "function_calls": [],
+        }
+
     def _select_tools_for_turn(self, bot_id: str, prompt_text: str) -> List[Dict[str, Any]]:
         text = prompt_text.lower()
+
+        role_tools = {
+            "chief": ["gmail_search", "gmail_read", "calendar_list_events"],
+            "scout": [
+                "gmail_search", "gmail_read", "calendar_list_events", "browse_url",
+                "browser_open", "browser_snapshot", "browser_click", "browser_type"
+            ],
+        }
 
         desktop_words = (
             "antigravity", "desktop", "schermo",
@@ -626,7 +1006,12 @@ class AgentOrchestrator:
             "apri l'app", "apri applicazione"
         )
 
+        google_words = ("mail", "email", "posta", "calendario", "agenda", "appuntamenti")
+        browser_words = ("browser", "web", "sito", "pagina", "url", "http", "https", "naviga", "snapshot", "click web", "digita web", "sandbox")
+
         desktop_task = any(word in text for word in desktop_words)
+        google_task = any(word in text for word in google_words)
+        browser_task = any(word in text for word in browser_words)
 
         if desktop_task:
             names = {
@@ -640,11 +1025,29 @@ class AgentOrchestrator:
             names = {"inspect_zip", "read_document"}
         elif any(word in text for word in ("file", "cartella", "documento")):
             names = {"search_files", "read_document", "manage_files"}
+        elif google_task:
+            bot_tools = role_tools.get(bot_id, ["gmail_search", "gmail_read", "calendar_list_events"])
+            names = set(bot_tools)
+        elif browser_task:
+            names = {"browser_open", "browser_snapshot", "browser_click", "browser_type"}
         else:
             names = set()
 
+        if bot_id == "scout":
+            scout_tools = role_tools.get("scout", [])
+            names.update(scout_tools)
+
+        if browser_task:
+            names.update({"browser_open", "browser_snapshot", "browser_click", "browser_type"})
+
+        if google_task and not desktop_task:
+            bot_tools = role_tools.get(bot_id, ["gmail_search", "gmail_read", "calendar_list_events"])
+            names.update(t for t in bot_tools if t in {"gmail_search", "gmail_read", "calendar_list_events"})
+
         simple_question = (
             not desktop_task
+            and not google_task
+            and not browser_task
             and not names
             and not any(
                 word in text
@@ -652,7 +1055,9 @@ class AgentOrchestrator:
                     "delega", "collabora", "peer review",
                     "analizza il progetto", "sviluppa",
                     "implementa", "modifica il codice",
-                    "esegui un task"
+                    "esegui un task",
+                    "mail", "email", "posta", "calendario", "agenda", "appuntamenti",
+                    "browser", "web", "sito", "pagina", "url", "naviga", "snapshot"
                 )
             )
         )
@@ -662,6 +1067,11 @@ class AgentOrchestrator:
 
         if bot_id == "chief" and not desktop_task:
             names.add("delegate_to_coworker")
+
+        # A) INTERRUTTORE: Quando il controllo desktop fisico è disattivato, non esporre i tool relativi
+        if not tools_os.is_desktop_control_enabled():
+            names.discard("click_screen_element")
+            names.discard("focus_and_paste_into_app")
 
         return [
             tool for tool in self.openai_tools
@@ -790,6 +1200,9 @@ class AgentOrchestrator:
 
         context_text = f"{user_content} {instruction} {task_prompt}"
         selected_tools = self._select_tools_for_turn(bot_id, context_text) if enable_tools else []
+        gemini_enable_tools = bool(selected_tools) and enable_tools
+        selected_names = frozenset(t["function"]["name"] for t in selected_tools) if gemini_enable_tools else frozenset()
+        gemini_tools = self._gemini_tools_for(selected_names) if gemini_enable_tools else None
 
         if chosen_provider == "LOCAL":
             messages = structured_messages if structured_messages else [{"role": "user", "content": task_prompt}]
@@ -812,42 +1225,70 @@ class AgentOrchestrator:
                     self.reload_client()
                 if self.client and self.api_key and self.api_key not in ("your_api_key_here", "la_tua_chiave_qui"):
                     print(f"[AgentEngine] Qwen Locale non disponibile ({q_res.get('error')}). Fallback su Gemini Cloud...")
-                    gem_resp, model_name, gem_err = await self._call_gemini_resilient(
-                        contents=[types.Content(role="user", parts=[types.Part.from_text(text=task_prompt)])],
-                        system_instruction=system_prompt,
-                        enable_tools=enable_tools,
-                        task_id=task_id,
-                        chat_id=chat_id,
-                    )
-                    if not gem_err and gem_resp is not None:
-                        norm_fcalls = []
-                        if gem_resp.function_calls:
-                            for fc in gem_resp.function_calls:
-                                norm_fcalls.append({
-                                    "name": fc.name,
-                                    "args": dict(fc.args) if fc.args else {},
-                                    "id": getattr(fc, "id", None),
-                                })
-                        txts = []
-                        if gem_resp.candidates and gem_resp.candidates[0].content and gem_resp.candidates[0].content.parts:
-                            for p in gem_resp.candidates[0].content.parts:
-                                if getattr(p, "text", None):
-                                    txts.append(p.text)
-                        return {
-                            "success": True,
-                            "assistant_text": "\n".join(txts).strip(),
-                            "function_calls": norm_fcalls,
-                            "model_name": f"{model_name} (Cloud Fallback)",
-                            "provider": "CLOUD_FALLBACK",
-                            "error": None,
-                        }
+                    if on_chunk is not None:
+                        stream_res = await self._call_gemini_stream(
+                            contents=[types.Content(role="user", parts=[types.Part.from_text(text=task_prompt)])],
+                            system_instruction=system_prompt,
+                            on_chunk=on_chunk,
+                            enable_tools=gemini_enable_tools,
+                            tools_override=gemini_tools,
+                            task_id=task_id,
+                            chat_id=chat_id,
+                        )
+                        if stream_res.get("success"):
+                            stream_res["model_name"] = f"{stream_res['model_name']} (Cloud Fallback)"
+                            stream_res["provider"] = "CLOUD_FALLBACK"
+                            return stream_res
+                    else:
+                        gem_resp, model_name, gem_err = await self._call_gemini_resilient(
+                            contents=[types.Content(role="user", parts=[types.Part.from_text(text=task_prompt)])],
+                            system_instruction=system_prompt,
+                            enable_tools=gemini_enable_tools,
+                            tools_override=gemini_tools,
+                            task_id=task_id,
+                            chat_id=chat_id,
+                        )
+                        if not gem_err and gem_resp is not None:
+                            norm_fcalls = []
+                            if gem_resp.function_calls:
+                                for fc in gem_resp.function_calls:
+                                    norm_fcalls.append({
+                                        "name": fc.name,
+                                        "args": dict(fc.args) if fc.args else {},
+                                        "id": getattr(fc, "id", None),
+                                    })
+                            txts = []
+                            if gem_resp.candidates and gem_resp.candidates[0].content and gem_resp.candidates[0].content.parts:
+                                for p in gem_resp.candidates[0].content.parts:
+                                    if getattr(p, "text", None):
+                                        txts.append(p.text)
+                            return {
+                                "success": True,
+                                "assistant_text": "\n".join(txts).strip(),
+                                "function_calls": norm_fcalls,
+                                "model_name": f"{model_name} (Cloud Fallback)",
+                                "provider": "CLOUD_FALLBACK",
+                                "error": None,
+                            }
             return q_res
 
         # Provider CLOUD (Gemini)
+        if on_chunk is not None:
+            return await self._call_gemini_stream(
+                contents=[types.Content(role="user", parts=[types.Part.from_text(text=task_prompt)])],
+                system_instruction=system_prompt,
+                on_chunk=on_chunk,
+                enable_tools=gemini_enable_tools,
+                tools_override=gemini_tools,
+                task_id=task_id,
+                chat_id=chat_id,
+            )
+
         gem_resp, model_name, gem_err = await self._call_gemini_resilient(
             contents=[types.Content(role="user", parts=[types.Part.from_text(text=task_prompt)])],
             system_instruction=system_prompt,
-            enable_tools=enable_tools,
+            enable_tools=gemini_enable_tools,
+            tools_override=gemini_tools,
             task_id=task_id,
             chat_id=chat_id,
         )
@@ -1240,6 +1681,7 @@ class AgentOrchestrator:
                     "- Se l'utente chiede di interagire con un'applicazione o con il desktop, "
                     "invoca subito lo strumento 'list_windows' o 'inspect_screen' per osservare l'ambiente "
                     "prima di qualsiasi risposta o azione, senza usare strumenti ZIP o filesystem.\n"
+                    "- Per consultare la posta elettronica usa 'gmail_search' e 'gmail_read'. Per consultare agenda e appuntamenti usa 'calendar_list_events' (strumenti in sola lettura).\n"
                     "- Per clic e digitazione richiedi approvazione esplicita.\n"
                     "- Una delega non costituisce completamento del compito.\n"
                     "- Non dichiarare di aver eseguito azioni senza risultati verificabili.\n"
@@ -1684,6 +2126,142 @@ class AgentOrchestrator:
                             tool_summaries.append(f"⚠️ **Browser Web ('{u}'):** {res_browse.get('message')}")
                             task_evidence["browse_url"] = {"status": "error", "error": res_browse.get("message")}
 
+                    elif fn_name == "browser_open":
+                        u = str(fn_args.get("url", ""))
+                        await _emit({"type": "tool_progress", "stage": "Apertura URL nel browser sandbox...", "tool": "browser_open", "bot_id": bot_id, "bot_name": bot_name})
+                        res_open = await asyncio.to_thread(tools_browser.browser_open, u)
+                        if res_open.get("status") == "ok":
+                            db.update_activity(activity_id, status="completed", result={"url": res_open.get("url", u), "title": res_open.get("title")})
+                            await _emit({"type": "tool_progress", "stage": "Pagina sandbox caricata", "tool": "browser_open", "bot_id": bot_id, "bot_name": bot_name})
+                            tool_summaries.append(f"🌐 **Browser Sandbox:** Pagina aperta '{res_open.get('title')}' ({res_open.get('url', u)})")
+                            task_evidence["browser_open"] = {"url": res_open.get("url", u), "title": res_open.get("title"), "status": "ok"}
+                        else:
+                            db.update_activity(activity_id, status="failed", error_msg=res_open.get("message"))
+                            tool_summaries.append(f"⚠️ **Browser Sandbox ('{u}'):** {res_open.get('message')}")
+                            task_evidence["browser_open"] = {"status": "error", "error": res_open.get("message")}
+
+                    elif fn_name == "browser_snapshot":
+                        await _emit({"type": "tool_progress", "stage": "Cattura snapshot accessibilità sandbox...", "tool": "browser_snapshot", "bot_id": bot_id, "bot_name": bot_name})
+                        res_snap = await asyncio.to_thread(tools_browser.browser_snapshot)
+                        if res_snap.get("status") == "ok":
+                            db.update_activity(activity_id, status="completed", result={"title": res_snap.get("title"), "total_refs": res_snap.get("total_refs", 0)})
+                            await _emit({"type": "tool_progress", "stage": "Snapshot generato", "tool": "browser_snapshot", "bot_id": bot_id, "bot_name": bot_name})
+                            snap_text = str(res_snap.get("snapshot", "")).strip()
+                            snap_preview = snap_text[:600] + ("... [troncato]" if len(snap_text) > 600 else "")
+                            tool_summaries.append(f"🌐 **Snapshot Browser Sandbox ({res_snap.get('title')}):**\n```\n{snap_preview}\n```")
+                            task_evidence["browser_snapshot"] = {"status": "ok", "title": res_snap.get("title"), "snapshot": snap_text}
+                        else:
+                            db.update_activity(activity_id, status="failed", error_msg=res_snap.get("message"))
+                            tool_summaries.append(f"⚠️ **Snapshot Browser Sandbox:** {res_snap.get('message')}")
+                            task_evidence["browser_snapshot"] = {"status": "error", "error": res_snap.get("message")}
+
+                    elif fn_name == "browser_click":
+                        ref_val = fn_args.get("ref")
+                        appr = db.create_approval(
+                            chat_id=chat_id,
+                            bot_id=bot_id,
+                            action_type="browser_action",
+                            description=f"Clic su elemento [{ref_val}] nel browser sandbox",
+                            payload={"tool_name": "browser_click", "args": fn_args},
+                            activity_id=activity_id,
+                            task_id=current_task_id,
+                        )
+                        db.update_activity(activity_id, status="waiting_approval")
+                        db.update_task_status_atomic(current_task_id, "waiting_approval")
+
+                        action_card = {
+                            "status": "waiting_approval",
+                            "requires_approval": True,
+                            "approval_id": appr["id"],
+                            "task_id": current_task_id,
+                            "title": f"Autorizzazione Clic Sandbox (ref [{ref_val}])",
+                            "details": f"Il bot intende cliccare sull'elemento [{ref_val}] nel browser sandbox. Clicca 'Approva' per procedere.",
+                        }
+                        tool_summaries.append(f"🔒 **Autorizzazione richiesta per clic sandbox su elemento [{ref_val}].**")
+
+                    elif fn_name == "browser_type":
+                        ref_val = fn_args.get("ref")
+                        text_val = str(fn_args.get("text", ""))
+                        appr = db.create_approval(
+                            chat_id=chat_id,
+                            bot_id=bot_id,
+                            action_type="browser_action",
+                            description=f"Inserimento testo in elemento [{ref_val}] nel browser sandbox",
+                            payload={"tool_name": "browser_type", "args": fn_args},
+                            activity_id=activity_id,
+                            task_id=current_task_id,
+                        )
+                        db.update_activity(activity_id, status="waiting_approval")
+                        db.update_task_status_atomic(current_task_id, "waiting_approval")
+
+                        action_card = {
+                            "status": "waiting_approval",
+                            "requires_approval": True,
+                            "approval_id": appr["id"],
+                            "task_id": current_task_id,
+                            "title": f"Autorizzazione Testo Sandbox (ref [{ref_val}])",
+                            "details": f"Il bot intende inserire testo nell'elemento [{ref_val}] del browser sandbox: '{text_val[:50]}...'. Clicca 'Approva' per procedere.",
+                        }
+                        tool_summaries.append(f"🔒 **Autorizzazione richiesta per inserimento testo in elemento sandbox [{ref_val}].**")
+
+                    elif fn_name == "gmail_search":
+                        q = str(fn_args.get("query", ""))
+                        max_r = int(fn_args.get("max_results", 10) or 10)
+                        await _emit({"type": "tool_progress", "stage": "Ricerca email in corso...", "tool": "gmail_search", "bot_id": bot_id, "bot_name": bot_name})
+                        res_mail = await asyncio.to_thread(tools_google.gmail_search, q, max_r)
+                        if res_mail.get("status") == "ok":
+                            db.update_activity(activity_id, status="completed", result={"query": q, "count": res_mail.get("count", 0)})
+                            await _emit({"type": "tool_progress", "stage": "Risultato verificato", "tool": "gmail_search", "bot_id": bot_id, "bot_name": bot_name})
+                            msgs = res_mail.get("messages", [])
+                            lines = []
+                            for m in msgs[:5]:
+                                lines.append(f"- ID `{m.get('id')}` | Da: {m.get('sender')} | Oggetto: {m.get('subject')} ({m.get('date')})")
+                            preview_txt = "\n".join(lines) if lines else "Nessuna email trovata."
+                            tool_summaries.append(f"✉️ **Gmail Search ('{q}'):** Trovati {len(msgs)} messaggi:\n{preview_txt}")
+                            task_evidence["gmail_search"] = {"query": q, "count": len(msgs), "messages": msgs}
+                        else:
+                            db.update_activity(activity_id, status="failed", error_msg=res_mail.get("message"))
+                            tool_summaries.append(f"⚠️ **Gmail Search ('{q}'):** {res_mail.get('message')}")
+                            task_evidence["gmail_search"] = {"status": "error", "error": res_mail.get("message")}
+
+                    elif fn_name == "gmail_read":
+                        mid = str(fn_args.get("message_id", ""))
+                        max_c = int(fn_args.get("max_chars", 4000) or 4000)
+                        await _emit({"type": "tool_progress", "stage": "Lettura messaggio Gmail in corso...", "tool": "gmail_read", "bot_id": bot_id, "bot_name": bot_name})
+                        res_read = await asyncio.to_thread(tools_google.gmail_read, mid, max_c)
+                        if res_read.get("status") == "ok":
+                            db.update_activity(activity_id, status="completed", result={"message_id": mid, "subject": res_read.get("subject")})
+                            await _emit({"type": "tool_progress", "stage": "Risultato verificato", "tool": "gmail_read", "bot_id": bot_id, "bot_name": bot_name})
+                            b_preview = str(res_read.get("body", "")).strip()
+                            if len(b_preview) > 500:
+                                b_preview = b_preview[:500] + "... [troncato]"
+                            tool_summaries.append(f"📧 **Gmail Read (`{mid}`):** Da: {res_read.get('sender')} | Oggetto: {res_read.get('subject')}\n```\n{b_preview}\n```")
+                            task_evidence["gmail_read"] = {"message_id": mid, "subject": res_read.get("subject"), "sender": res_read.get("sender"), "body": res_read.get("body")}
+                        else:
+                            db.update_activity(activity_id, status="failed", error_msg=res_read.get("message"))
+                            tool_summaries.append(f"⚠️ **Gmail Read (`{mid}`):** {res_read.get('message')}")
+                            task_evidence["gmail_read"] = {"status": "error", "error": res_read.get("message")}
+
+                    elif fn_name == "calendar_list_events":
+                        days_a = int(fn_args.get("days_ahead", 7) or 7)
+                        max_e = int(fn_args.get("max_results", 20) or 20)
+                        await _emit({"type": "tool_progress", "stage": "Consultazione Google Calendar in corso...", "tool": "calendar_list_events", "bot_id": bot_id, "bot_name": bot_name})
+                        res_cal = await asyncio.to_thread(tools_google.calendar_list_events, days_a, max_e)
+                        if res_cal.get("status") == "ok":
+                            db.update_activity(activity_id, status="completed", result={"days_ahead": days_a, "count": res_cal.get("count", 0)})
+                            await _emit({"type": "tool_progress", "stage": "Risultato verificato", "tool": "calendar_list_events", "bot_id": bot_id, "bot_name": bot_name})
+                            ev_list = res_cal.get("events", [])
+                            lines = []
+                            for ev in ev_list[:5]:
+                                lines.append(f"- {ev.get('summary')} ({ev.get('start')} -> {ev.get('end')})")
+                            preview_txt = "\n".join(lines) if lines else "Nessun evento in agenda."
+                            tool_summaries.append(f"📅 **Google Calendar ({days_a} giorni):** {len(ev_list)} eventi trovati:\n{preview_txt}")
+                            task_evidence["calendar_list_events"] = {"days_ahead": days_a, "count": len(ev_list), "events": ev_list}
+                        else:
+                            db.update_activity(activity_id, status="failed", error_msg=res_cal.get("message"))
+                            tool_summaries.append(f"⚠️ **Google Calendar:** {res_cal.get('message')}")
+                            task_evidence["calendar_list_events"] = {"status": "error", "error": res_cal.get("message")}
+
                     elif fn_name == "list_windows":
                         flt = fn_args.get("filter_str")
                         await _emit({"type": "tool_progress", "stage": "Rilevamento finestre in corso...", "tool": "list_windows", "bot_id": bot_id, "bot_name": bot_name})
@@ -1714,7 +2292,7 @@ class AgentOrchestrator:
 
                 # Multi-step continuation: se sono stati eseguiti tool immediati e non ci sono approvazioni in sospeso o deleghe,
                 # e l'assistente non ha ancora formulato una risposta completa:
-                immediate_evidence = [k for k in ("search_files", "read_document", "inspect_zip", "browse_url", "list_windows") if k in task_evidence]
+                immediate_evidence = [k for k in ("search_files", "read_document", "inspect_zip", "browse_url", "list_windows", "gmail_search", "gmail_read", "calendar_list_events") if k in task_evidence]
                 if immediate_evidence and not action_card and not turn_queue and len(assistant_text) < 40 and not current_item.get("is_blocked"):
                     current_prov = self._resolve_provider(user_content, current_item["instruction"])
                     if current_prov == "LOCAL":
@@ -1791,6 +2369,9 @@ class AgentOrchestrator:
                         (task_evidence.get("read_document") and task_evidence["read_document"].get("status") != "error") or
                         (task_evidence.get("inspect_zip") and task_evidence["inspect_zip"].get("status") != "error") or
                         (task_evidence.get("browse_url") and task_evidence["browse_url"].get("status") != "error") or
+                        (task_evidence.get("gmail_search") and task_evidence["gmail_search"].get("status") != "error") or
+                        (task_evidence.get("gmail_read") and task_evidence["gmail_read"].get("status") != "error") or
+                        (task_evidence.get("calendar_list_events") and task_evidence["calendar_list_events"].get("status") != "error") or
                         (task_evidence.get("inspection") and task_evidence["inspection"].get("found") is True) or
                         any(k.startswith("file_") and task_evidence[k].get("status") == "ok" for k in task_evidence)
                     )
@@ -1985,6 +2566,36 @@ class AgentOrchestrator:
                     "screenshot_b64": result.get("screenshot_b64"),
                 }
 
+            elif tool_name == "browser_click":
+                ref_val = tool_args.get("ref")
+                result = await asyncio.to_thread(
+                    tools_browser.browser_click,
+                    ref=ref_val,
+                    approved=True,
+                )
+                action_card = {
+                    "status": "done" if result.get("status") == "ok" else "error",
+                    "approval_id": approval_id,
+                    "task_id": task_id,
+                    "title": result.get("message", f"Clic sandbox [{ref_val}] completato."),
+                }
+
+            elif tool_name == "browser_type":
+                ref_val = tool_args.get("ref")
+                text_val = str(tool_args.get("text", ""))
+                result = await asyncio.to_thread(
+                    tools_browser.browser_type,
+                    ref=ref_val,
+                    text=text_val,
+                    approved=True,
+                )
+                action_card = {
+                    "status": "done" if result.get("status") == "ok" else "error",
+                    "approval_id": approval_id,
+                    "task_id": task_id,
+                    "title": result.get("message", f"Testo inserito in elemento sandbox [{ref_val}]."),
+                }
+
             is_success = result.get("status") == "ok"
             if appr.get("activity_id"):
                 db.update_activity(
@@ -2010,6 +2621,11 @@ class AgentOrchestrator:
                 evidence_data.update({
                     "real_coords": [result.get("real_x"), result.get("real_y")],
                     "window": result.get("window_title"),
+                })
+            elif tool_name in ("browser_click", "browser_type"):
+                evidence_data.update({
+                    "ref": tool_args.get("ref"),
+                    "action_message": result.get("message"),
                 })
 
             if task_id:
